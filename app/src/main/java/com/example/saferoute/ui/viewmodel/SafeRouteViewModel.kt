@@ -215,8 +215,11 @@ class SafeRouteViewModel(application: Application) : AndroidViewModel(applicatio
 
     fun onSplashFinished() {
         val profile = userProfile.value
-        if (profile?.completedOnboarding == true) {
+        val firebaseUser = com.example.saferoute.data.firebase.FirebaseAuthManager.currentUser
+        if (firebaseUser != null && profile?.isLoggedIn == true) {
             _currentScreen.value = ScreenState.Main
+        } else if (profile?.completedOnboarding == true) {
+            _currentScreen.value = ScreenState.Auth
         } else {
             _currentScreen.value = ScreenState.Onboarding
         }
@@ -230,9 +233,9 @@ class SafeRouteViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
 
-    fun loginUser(userId: String, email: String, name: String, isGuest: Boolean) {
+    fun loginUser(userId: String, email: String, name: String) {
         viewModelScope.launch {
-            repository.logInUser(userId, email, name, isGuest)
+            repository.logInUser(userId, email, name)
             repository.setOnboardingCompleted(true)
             _currentScreen.value = ScreenState.Main
         }

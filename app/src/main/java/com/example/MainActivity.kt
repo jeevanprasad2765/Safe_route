@@ -88,7 +88,6 @@ class MainActivity : ComponentActivity() {
                 val defaultProfile = profile ?: UserProfileEntity(
                     email = "alex.taylor@saferoute.io",
                     name = "Alex Taylor",
-                    isGuest = false,
                     isPlusMember = false,
                     safetyPreference = "ALWAYS_SAFETY",
                     highContrastMode = false,
@@ -145,8 +144,8 @@ class MainActivity : ComponentActivity() {
                                     }
                                     is ScreenState.Auth -> {
                                         AuthScreen(
-                                            onLoginSuccess = { uid, email, name, isGuest ->
-                                                viewModel.loginUser(uid, email, name, isGuest)
+                                            onLoginSuccess = { uid, email, name ->
+                                                viewModel.loginUser(uid, email, name)
                                             }
                                         )
                                     }
@@ -156,7 +155,6 @@ class MainActivity : ComponentActivity() {
                                                 savedPlaces = savedPlaces,
                                                 recentTrips = trips,
                                                 incidentZones = viewModel.getIncidentZones(),
-                                                isGuestMode = defaultProfile.isGuest,
                                                 activeGroupTrip = activeGroupTrip,
                                                 userLocationCoordinates = userCoordinates,
                                                 onUpdateUserCoordinates = { coords, resolved ->
@@ -233,7 +231,6 @@ class MainActivity : ComponentActivity() {
                                                 savedPlaces = savedPlaces,
                                                 recentTrips = trips,
                                                 incidentZones = viewModel.getIncidentZones(),
-                                                isGuestMode = defaultProfile.isGuest,
                                                 activeGroupTrip = activeGroupTrip,
                                                 userLocationCoordinates = userCoordinates,
                                                 onUpdateUserCoordinates = { coords, resolved ->

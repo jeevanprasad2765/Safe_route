@@ -125,7 +125,6 @@ fun HomeScreen(
     savedPlaces: List<SavedPlaceEntity>,
     recentTrips: List<TripHistoryEntity>,
     incidentZones: List<IncidentZone>,
-    isGuestMode: Boolean = false,
     activeGroupTrip: GroupTripSession = GroupTripSession(),
     userLocationCoordinates: Pair<Double, Double>? = null,
     onUpdateUserCoordinates: (coords: Pair<Double, Double>, resolvedName: String?) -> Unit = { _, _ -> },
@@ -289,60 +288,6 @@ fun HomeScreen(
             .background(DarkNavyBackground)
             .verticalScroll(rememberScrollState())
     ) {
-        // GUEST MODE PERSISTENT BANNER (If Guest)
-        if (isGuestMode) {
-            Box(
-                modifier = Modifier
-                    .testTag("guest_mode_banner")
-                    .fillMaxWidth()
-                    .bounceClick(scaleDown = 0.98f) { onNavigateToAuth() }
-                    .background(
-                        Brush.horizontalGradient(
-                            colors = listOf(SafeRouteBlue, SafeRouteTeal)
-                        )
-                    )
-                    .padding(horizontal = 16.dp, vertical = 10.dp)
-            ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    Row(
-                        modifier = Modifier.weight(1f),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.LocationOn,
-                            contentDescription = null,
-                            tint = Color.White,
-                            modifier = Modifier.size(18.dp)
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text(
-                            text = LanguageManager.get("guest_mode_banner"),
-                            fontSize = 12.sp,
-                            color = Color.White,
-                            fontWeight = FontWeight.SemiBold
-                        )
-                    }
-                    Box(
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(10.dp))
-                            .background(Color.White)
-                            .padding(horizontal = 10.dp, vertical = 5.dp)
-                    ) {
-                        Text(
-                            text = LanguageManager.get("sign_in_or_up"),
-                            color = SafeRouteBlue,
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.Bold
-                        )
-                    }
-                }
-            }
-        }
-
         // LOCATION PERMISSION / DETECTION FALLBACK BANNER (Powered by Accompanist Permissions)
         if (showPermissionPromptBanner || !isAnyLocationGranted || isDetectingLocation || locationDetectionError != null) {
             val isTimeout = locationDetectionError == "TIMEOUT"

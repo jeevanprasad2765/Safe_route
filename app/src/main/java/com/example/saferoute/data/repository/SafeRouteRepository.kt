@@ -125,7 +125,7 @@ class SafeRouteRepository(
     suspend fun insertContact(name: String, phone: String, relationship: String, isPrimary: Boolean) {
         contactDao.insertContact(EmergencyContactEntity(name = name, phone = phone, relationship = relationship, isPrimary = isPrimary))
         val current = userProfile.firstOrNull()
-        if (current != null && current.isLoggedIn && !current.isGuest) {
+        if (current != null && current.isLoggedIn && current.userId.isNotBlank()) {
             val all = contactDao.getAllContacts().firstOrNull() ?: emptyList()
             com.example.saferoute.data.firebase.FirebaseFirestoreManager.syncEmergencyContacts(current.userId, all)
         }
@@ -134,7 +134,7 @@ class SafeRouteRepository(
     suspend fun deleteContact(contact: EmergencyContactEntity) {
         contactDao.deleteContact(contact)
         val current = userProfile.firstOrNull()
-        if (current != null && current.isLoggedIn && !current.isGuest) {
+        if (current != null && current.isLoggedIn && current.userId.isNotBlank()) {
             val all = contactDao.getAllContacts().firstOrNull() ?: emptyList()
             com.example.saferoute.data.firebase.FirebaseFirestoreManager.syncEmergencyContacts(current.userId, all)
         }
@@ -143,7 +143,7 @@ class SafeRouteRepository(
     suspend fun savePlace(title: String, address: String, iconName: String, lat: Double, lng: Double) {
         savedPlaceDao.insertPlace(SavedPlaceEntity(title = title, address = address, iconName = iconName, latitude = lat, longitude = lng))
         val current = userProfile.firstOrNull()
-        if (current != null && current.isLoggedIn && !current.isGuest) {
+        if (current != null && current.isLoggedIn && current.userId.isNotBlank()) {
             val all = savedPlaceDao.getAllSavedPlaces().firstOrNull() ?: emptyList()
             com.example.saferoute.data.firebase.FirebaseFirestoreManager.syncSavedPlaces(current.userId, all)
         }
@@ -152,7 +152,7 @@ class SafeRouteRepository(
     suspend fun deletePlace(place: SavedPlaceEntity) {
         savedPlaceDao.deletePlace(place)
         val current = userProfile.firstOrNull()
-        if (current != null && current.isLoggedIn && !current.isGuest) {
+        if (current != null && current.isLoggedIn && current.userId.isNotBlank()) {
             val all = savedPlaceDao.getAllSavedPlaces().firstOrNull() ?: emptyList()
             com.example.saferoute.data.firebase.FirebaseFirestoreManager.syncSavedPlaces(current.userId, all)
         }
@@ -183,7 +183,7 @@ class SafeRouteRepository(
         )
         val insertedId = tripDao.insertTrip(trip)
         val current = userProfile.firstOrNull()
-        if (current != null && current.isLoggedIn && !current.isGuest) {
+        if (current != null && current.isLoggedIn && current.userId.isNotBlank()) {
             com.example.saferoute.data.firebase.FirebaseFirestoreManager.saveTripToFirestore(current.userId, trip.copy(id = insertedId))
         }
         return insertedId
@@ -199,7 +199,7 @@ class SafeRouteRepository(
     suspend fun updateSafetyPreference(pref: String) {
         userProfileDao.setSafetyPreference(pref)
         val current = userProfile.firstOrNull()
-        if (current != null && current.isLoggedIn && !current.isGuest) {
+        if (current != null && current.isLoggedIn && current.userId.isNotBlank()) {
             com.example.saferoute.data.firebase.FirebaseFirestoreManager.saveUserProfile(
                 userId = current.userId,
                 name = current.name,
@@ -223,7 +223,7 @@ class SafeRouteRepository(
     suspend fun updateLanguage(langCode: String) {
         val current = userProfile.firstOrNull() ?: UserProfileEntity()
         userProfileDao.insertOrUpdateProfile(current.copy(languagePreference = langCode))
-        if (current.isLoggedIn && !current.isGuest) {
+        if (current.isLoggedIn && current.userId.isNotBlank()) {
             com.example.saferoute.data.firebase.FirebaseFirestoreManager.saveUserProfile(
                 userId = current.userId,
                 name = current.name,
@@ -236,19 +236,18 @@ class SafeRouteRepository(
         }
     }
 
-    suspend fun logInUser(userId: String, email: String, name: String, isGuest: Boolean) {
+    suspend fun logInUser(userId: String, email: String, name: String) {
         val current = userProfile.firstOrNull() ?: UserProfileEntity()
         val updated = current.copy(
             userId = userId,
             email = email,
             name = name,
-            isLoggedIn = !isGuest,
-            isGuest = isGuest
+            isLoggedIn = true
         )
         userProfileDao.insertOrUpdateProfile(updated)
 
-        // If real logged-in user, fetch and sync Firestore data
-        if (!isGuest && userId.isNotBlank()) {
+        // Fetch and sync Firestore data
+        if (userId.isNotBlank()) {
             val firestoreData = com.example.saferoute.data.firebase.FirebaseFirestoreManager.fetchUserData(userId)
             if (firestoreData != null) {
                 // If firestore had saved emergency contacts, populate them
@@ -310,8 +309,7 @@ class SafeRouteRepository(
         userProfileDao.insertOrUpdateProfile(
             current.copy(
                 isLoggedIn = false,
-                isGuest = true,
-                userId = "guest_${System.currentTimeMillis()}"
+                userId = ""
             )
         )
     }

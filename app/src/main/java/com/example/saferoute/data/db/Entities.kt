@@ -40,13 +40,12 @@ data class SavedPlaceEntity(
 @Entity(tableName = "user_profile")
 data class UserProfileEntity(
     @PrimaryKey val id: Long = 1,
-    val userId: String = "guest_default",
-    val name: String = "Alex Taylor",
-    val email: String = "alex.taylor@saferoute.io",
-    val phone: String = "+91 98765 43210",
+    val userId: String = "",
+    val name: String = "",
+    val email: String = "",
+    val phone: String = "",
     val languagePreference: String = "en",
     val isLoggedIn: Boolean = false,
-    val isGuest: Boolean = true,
     val safetyPreference: String = "ALWAYS_SAFETY", // "ALWAYS_SAFETY", "BALANCED", "SPEED_FIRST"
     val autoShareSosLocation: Boolean = true,
     val highContrastMode: Boolean = false,

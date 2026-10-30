@@ -77,7 +77,7 @@ import kotlinx.coroutines.launch
 
 @Composable
 fun AuthScreen(
-    onLoginSuccess: (userId: String, email: String, name: String, isGuest: Boolean) -> Unit
+    onLoginSuccess: (userId: String, email: String, name: String) -> Unit
 ) {
     var isSignUp by remember { mutableStateOf(false) }
     var email by remember { mutableStateOf("alex.taylor@saferoute.io") }
@@ -378,7 +378,7 @@ fun AuthScreen(
                                     isLoading = false
                                     when (result) {
                                         is AuthResult.Success -> {
-                                            onLoginSuccess(result.uid, result.email, result.name, false)
+                                            onLoginSuccess(result.uid, result.email, result.name)
                                         }
                                         is AuthResult.Error -> {
                                             errorMessage = result.message
@@ -424,7 +424,7 @@ fun AuthScreen(
                             isLoading = false
                             when (result) {
                                 is AuthResult.Success -> {
-                                    onLoginSuccess(result.uid, result.email, result.name, false)
+                                    onLoginSuccess(result.uid, result.email, result.name)
                                 }
                                 is AuthResult.Error -> {
                                     errorMessage = result.message
@@ -484,31 +484,6 @@ fun AuthScreen(
                     color = SafeRouteTeal,
                     fontSize = 13.sp,
                     fontWeight = FontWeight.SemiBold
-                )
-            }
-
-            Spacer(modifier = Modifier.height(6.dp))
-
-            // CONTINUE AS GUEST BUTTON
-            Box(
-                modifier = Modifier
-                    .testTag("guest_login_button")
-                    .fillMaxWidth()
-                    .height(50.dp)
-                    .bounceClick(scaleDown = 0.96f) {
-                        val guestId = "guest_${System.currentTimeMillis()}"
-                        onLoginSuccess(guestId, "guest@saferoute.io", "Guest User", true)
-                    }
-                    .clip(RoundedCornerShape(14.dp))
-                    .background(DarkNavyCard)
-                    .border(1.dp, GlassSurfaceBorder, RoundedCornerShape(14.dp)),
-                contentAlignment = Alignment.Center
-            ) {
-                Text(
-                    text = LanguageManager.get("continue_as_guest"),
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 13.sp,
-                    color = Color.White
                 )
             }
 

@@ -16,7 +16,7 @@ import com.example.saferoute.risk.RiskSegmentEntity
         RouteOverpassCacheEntity::class,
         RiskSegmentEntity::class
     ],
-    version = 4,
+    version = 5,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
