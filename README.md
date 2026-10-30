@@ -1,111 +1,81 @@
-# 🏥 QueueCare — Smart Clinic Appointment System
+# 🛡️ SafeRoute — AI Safety-First Navigation & Emergency Companion
 
-A hackathon MVP that replaces fixed slots and paper queues with **ML-powered overbooking**, **live wait-time estimates**, and a **real-time clinic dashboard**.
+SafeRoute is a native Android application built with **Jetpack Compose**, **Kotlin Coroutines & Flow**, **Room**, and **Firebase**, designed to prioritize personal safety during travel. It dynamically scores routes using multi-factor safety intelligence—evaluating street lighting, foot traffic, verified incident density, and blackspot zones.
 
-## Problem
+---
 
-Clinics run on fixed slots and paper queues. Patients wait without knowing how long, and no-shows leave doctors idle while other patients wait.
-
-## Key Features
+## 🚀 Key Features
 
 | Feature | Description |
 |---|---|
-| **Patient Booking** | Enter name, age, phone, symptoms. Auto-triage suggests department & urgency. Pick doctor, date, and 30-min slot. Get a token ticket. |
-| **Smart Overbooking** (USP) | Gradient-boosting model predicts no-show probability. If a slot's no-show risk ≥ 50%, it accepts one extra booking. |
-| **Live Queue & Wait Time** | Real-time queue position, patients ahead, and estimated wait. Urgent patients sort first. Not-yet-arrived patients weighted by show-up probability. |
-| **Duration Prediction** | Per-department average consult time, scaled for age ≥ 60 and urgent cases. Updated with exponential moving average (70/30) on each completed consult. |
-| **Clinic Dashboard** | Staff picks a doctor → sees today's queue with urgency, predicted duration, no-show risk, and action buttons. WebSocket pushes instant updates. |
+| **Dynamic Safety Scoring** | AI-driven scoring combining street illumination, crowd activity, real-time hours, and historical blackspot data. |
+| **Sub-3s Route Calculation** | Parallel routing evaluation with Douglas-Peucker polyline simplification and multi-tier Room caching. |
+| **Emergency SOS Broadcast** | Instant SOS trigger with countdown dialog, dispatching live telemetry & alerts to emergency contacts. |
+| **Saved Places & Fast Navigation** | Manage favorite destinations with full CRUD (Home, Work, custom stops) and quick routing. |
+| **Bilingual Localisation** | Full localization support in **English** and **Tamil (தமிழ்)** with real-time in-app language switching. |
+| **Safe Corridors & Places** | Discovers open hospitals, pharmacies, police stations, and 24/7 safe havens along the route. |
+| **Firebase Cloud Sync** | Sync emergency contacts and trip audits securely with Firestore. |
 
-## Tech Stack
+---
 
-- **Frontend**: React (Vite) — no UI library, just CSS
-- **Backend**: FastAPI (Python)
-- **Database**: SQLite
-- **ML**: scikit-learn GradientBoostingClassifier
+## 🛠️ Tech Stack & Architecture
 
-## Quick Start (Two Commands)
+- **App Framework**: Android Native, Jetpack Compose, Material 3
+- **Language**: Kotlin 2.1+, Coroutines & StateFlow
+- **Architecture**: MVVM with Clean Architecture principles
+- **Local Persistence**: Room SQLite Database with Geohash indexing
+- **Cloud & Auth**: Firebase Auth, Firestore
+- **Mapping & Geocoding**: Geoapify API, OpenStreetMap, Leaflet / Google Maps integration
+- **ML / Risk Pipeline**: Python pipeline (`ml/`) generating road risk segments & blackspot datasets
+
+---
+
+## 📱 Getting Started
 
 ### Prerequisites
-- Python 3.10+ with pip
-- Node.js 18+ with npm
+- **Android Studio** (Ladybug / Koala or newer)
+- **JDK 17+** or **JDK 21**
+- Android SDK API 24+ (Target SDK 34 / 35)
 
-### Terminal 1 — Backend
-```bash
-cd backend
-pip install -r requirements.txt
-uvicorn main:app --reload --port 8000
+### Setup & Run
+
+1. **Clone the repository:**
+   ```bash
+   git clone https://github.com/jeevanprasad2765/Safe_route.git
+   cd Safe_route
+   ```
+
+2. **Configure API Keys:**
+   Copy `.env.example` to `.env` or set your Geoapify API key:
+   ```properties
+   GEOAPIFY_API_KEY=your_geoapify_key_here
+   ```
+
+3. **Build the Debug APK:**
+   ```powershell
+   ./gradlew assembleDebug
+   ```
+
+4. **Install on connected Device or Emulator:**
+   ```powershell
+   ./gradlew installDebug
+   ```
+
+---
+
+## 📂 Project Structure
+
+```
+├── app/                  # Main Android Application module
+│   ├── src/main/java/    # Kotlin source code (UI, Data, ViewModels, Risk)
+│   ├── src/main/assets/  # Safety models, blackspots, map styles
+│   └── src/main/res/     # Resources, drawables, localized strings (en, ta)
+├── ml/                   # Machine learning risk analysis and segment pipeline
+├── gradle/               # Gradle wrapper and version catalogs
+└── README.md             # Project documentation
 ```
 
-### Terminal 2 — Frontend
-```bash
-cd frontend
-npm install
-npm run dev
-```
+---
 
-**Or on Windows, just double-click:**
-1. `start-backend.bat`
-2. `start-frontend.bat`
-
-Then open **http://localhost:5173** in your browser.
-
-## Project Structure
-
-```
-queuecare/
-├── backend/
-│   ├── main.py           # FastAPI app — all endpoints & WebSocket
-│   ├── ml.py             # No-show prediction model (scikit-learn)
-│   └── requirements.txt  # Python dependencies
-├── frontend/
-│   ├── index.html        # HTML with Google Fonts
-│   └── src/
-│       ├── App.jsx       # Main app with tab navigation
-│       ├── App.css       # Complete stylesheet
-│       ├── api.js        # API helper functions
-│       ├── components/
-│       │   ├── BookTab.jsx    # Multi-step booking flow
-│       │   ├── TrackTab.jsx   # Patient tracking page
-│       │   ├── ClinicTab.jsx  # Staff dashboard
-│       │   └── TokenCard.jsx  # Ticket-style token card
-│       └── hooks/
-│           └── useWebSocket.js # WebSocket + polling fallback
-├── start-backend.bat     # One-click backend launcher
-├── start-frontend.bat    # One-click frontend launcher
-└── README.md
-```
-
-## API Endpoints
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `POST` | `/api/triage` | Analyse symptoms → suggest department & urgency |
-| `GET` | `/api/doctors` | List doctors (optionally filter by `?dept=`) |
-| `GET` | `/api/slots?doctor_id=&date=` | Available slots with overbooking logic |
-| `POST` | `/api/appointments` | Book an appointment |
-| `GET` | `/api/appointments/{id}` | Get appointment details |
-| `GET` | `/api/queue/{doctor_id}` | Live queue with wait times |
-| `PATCH` | `/api/appointments/{id}/status` | Update status (arrived/in_consult/completed/no_show) |
-| `WS` | `/ws/{doctor_id}` | WebSocket for live queue refresh signals |
-
-## ML Model
-
-The no-show model uses 5 features:
-
-1. **lead_days** — days between booking and appointment
-2. **age** — patient age
-3. **prior_no_shows** — past no-shows for this phone number
-4. **hour** — appointment hour
-5. **reminder_sent** — whether a reminder was sent
-
-It trains on synthetic data on first run. See `ml.py` for instructions on swapping in the [Kaggle Medical Appointment No Shows dataset](https://www.kaggle.com/datasets/joniarroba/noshowappointments).
-
-## Design
-
-- **Palette**: Ink `#12313A`, Background `#F3F7F6`, Teal `#1F7A72`, Amber `#D98E04`, Red `#C2412D`
-- **Fonts**: Bricolage Grotesque (headings), Atkinson Hyperlegible (body — accessibility-focused)
-- **Standout**: Ticket-style token card with notched edges
-
-## Team
-
-Built for Hackathon 2026 🚀
+## 📄 License
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
