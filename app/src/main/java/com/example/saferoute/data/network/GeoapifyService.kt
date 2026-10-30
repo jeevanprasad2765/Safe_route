@@ -4,9 +4,12 @@ import android.content.Context
 import android.util.Log
 import com.example.BuildConfig
 import com.example.saferoute.data.model.IncidentZone
+import com.example.saferoute.data.model.DataConfidence
 import com.example.saferoute.data.model.RouteLeg
+import com.example.saferoute.data.model.RouteCorridorData
 import com.example.saferoute.data.model.RouteOption
 import com.example.saferoute.data.model.RouteSegment
+import com.example.saferoute.data.model.SafetyScoreDetails
 import com.example.saferoute.data.model.SafetyTier
 import com.example.saferoute.data.model.TimeOfDay
 import com.example.saferoute.data.model.TurnInstruction
@@ -20,6 +23,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.maplibre.android.maps.Style
@@ -88,16 +92,27 @@ object GeoapifyService {
         SearchResult("Coimbatore, Tamil Nadu", "Coimbatore", 11.0168, 76.9558, "city", "cbe_city")
     )
 
+    // Geocoding / search client — 8 s explicit call timeout so UI never hangs behind a slow socket
     private val client = OkHttpClient.Builder()
-        .connectTimeout(15, TimeUnit.SECONDS)
-        .readTimeout(20, TimeUnit.SECONDS)
-        .writeTimeout(15, TimeUnit.SECONDS)
+        .connectTimeout(8, TimeUnit.SECONDS)
+        .readTimeout(8, TimeUnit.SECONDS)
+        .writeTimeout(8, TimeUnit.SECONDS)
+        .callTimeout(8, TimeUnit.SECONDS)
         .build()
 
     // In-memory caches to prevent redundant network requests
     private val autocompleteCache = mutableMapOf<String, List<SearchResult>>()
     private val geocodeCache = mutableMapOf<String, SearchResult?>()
     private val reverseGeocodeCache = mutableMapOf<String, String>()
+    /** Builds the shared route cache key used by fetch + enrichment caching. */
+    fun buildRouteCacheKey(
+        waypoints: List<Pair<Double, Double>>,
+        timeOfDay: TimeOfDay,
+        incidentCount: Int
+    ): String =
+        waypoints.joinToString(";") { "${(it.first * 1e4).toInt()},${(it.second * 1e4).toInt()}" } +
+                ":${timeOfDay.name}:$incidentCount"
+
     private val routeCache = mutableMapOf<String, List<RouteOption>>()
 
     private val _lastErrorMessage = MutableStateFlow<String?>(null)
@@ -499,8 +514,10 @@ object GeoapifyService {
     }
 
     /**
-     * Fetches real directions routes from Geoapify Routing API with alternatives,
-     * fetches OpenStreetMap corridor data along each route, and calculates differentiated safety scores.
+     * Fetches real directions routes from Geoapify Routing API (alternatives fetched in parallel,
+     * at most 3 distinct routes, polylines simplified with Douglas-Peucker BEFORE enrichment).
+     * This fast path NEVER blocks on Overpass / corridor enrichment — that happens later via
+     * [enrichRoutesWithCorridor] in the background so route cards can render immediately.
      */
     suspend fun fetchRealRoutes(
         waypoints: List<Pair<Double, Double>>,
@@ -509,15 +526,15 @@ object GeoapifyService {
         intermediateNames: List<String> = emptyList(),
         timeOfDay: TimeOfDay = TimeOfDay.DUSK,
         incidentZones: List<IncidentZone> = emptyList(),
-        context: Context
+        context: Context,
+        enrichWithCorridor: Boolean = false
     ): List<RouteOption> = withContext(Dispatchers.IO) {
         if (waypoints.size < 2) return@withContext emptyList()
 
         val sourceCoord = waypoints.first()
         val destCoord = waypoints.last()
 
-        val cacheKey = waypoints.joinToString(";") { "${(it.first * 1e4).toInt()},${(it.second * 1e4).toInt()}" } +
-                ":${timeOfDay.name}:${incidentZones.size}"
+        val cacheKey = buildRouteCacheKey(waypoints, timeOfDay, incidentZones.size)
 
         synchronized(routeCache) {
             routeCache[cacheKey]?.let { return@withContext it }
@@ -530,6 +547,7 @@ object GeoapifyService {
 
         val intermediatePoints = if (waypoints.size > 2) waypoints.subList(1, waypoints.size - 1) else emptyList()
         val corridorRepo = CorridorPlacesRepository.getInstance(context)
+        val tRoutingStart = System.currentTimeMillis()
         val distinctRoutes = mutableListOf<ParsedGeoapifyRoute>()
 
         // 1. Try Ola Maps Directions API first if configured
@@ -550,6 +568,7 @@ object GeoapifyService {
                     val olaParsed = parseOlaRoutingJson(body)
                     if (olaParsed.isNotEmpty()) {
                         distinctRoutes.addAll(olaParsed)
+                        Log.d(TAG, "ROUTE_PERF routing ola=${System.currentTimeMillis() - tRoutingStart}ms routes=${olaParsed.size}")
                     }
                 } else {
                     handleHttpError(response.code, response.message)
@@ -559,7 +578,8 @@ object GeoapifyService {
             }
         }
 
-        // 2. Fall back to Geoapify Routing API if Ola Maps had no routes and Geoapify is configured
+        // 2. Fall back to Geoapify Routing API if Ola Maps had no routes and Geoapify is configured.
+        //    All routing strategies are requested in parallel (async/awaitAll).
         if (distinctRoutes.isEmpty() && isGeoapifyConfigured()) {
             val apiKey = getApiKey()
             val waypointsParam = buildString {
@@ -572,31 +592,33 @@ object GeoapifyService {
 
             // Generate routes with different routing strategies: balanced, short, less_maneuvers
             val routingTypes = listOf("balanced", "short", "less_maneuvers")
-            val rawCandidates = mutableListOf<ParsedGeoapifyRoute>()
 
-            for (rType in routingTypes) {
-                val url = "$BASE_URL/v1/routing?waypoints=$waypointsParam&mode=drive&type=$rType&apiKey=$apiKey"
-                try {
-                    val request = Request.Builder()
-                        .url(url)
-                        .header("Accept", "application/json")
-                        .build()
+            // PARALLEL: fire all routing strategies concurrently; each completes in < 8s (OkHttp call timeout)
+            val rawCandidates = routingTypes.map { rType ->
+                async {
+                    val url = "$BASE_URL/v1/routing?waypoints=$waypointsParam&mode=drive&type=$rType&apiKey=$apiKey"
+                    try {
+                        val request = Request.Builder()
+                            .url(url)
+                            .header("Accept", "application/json")
+                            .build()
 
-                    val response = client.newCall(request).execute()
-                    if (response.isSuccessful) {
-                        val body = response.body?.string().orEmpty()
-                        val parsed = parseGeoapifyRoutingJson(body, rType)
-                        if (parsed != null && parsed.coordinates.isNotEmpty()) {
-                            rawCandidates.add(parsed)
+                        client.newCall(request).execute().use { resp ->
+                            if (resp.isSuccessful) {
+                                parseGeoapifyRoutingJson(resp.body?.string().orEmpty(), rType)
+                            } else null
                         }
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Routing type $rType query failed: ${e.message}")
+                        null
                     }
-                } catch (e: Exception) {
-                    Log.w(TAG, "Routing type $rType query failed: ${e.message}")
                 }
-            }
+            }.awaitAll().filterNotNull().filter { it.coordinates.isNotEmpty() }
 
-            // Deduplicate near-identical geometries
-            val geoapifyDistinct = deduplicateRoutes(rawCandidates)
+            Log.d(TAG, "ROUTE_PERF routing geoapify=${System.currentTimeMillis() - tRoutingStart}ms candidates=${rawCandidates.size}")
+
+            // Deduplicate near-identical geometries (max 3 alternatives total)
+            val geoapifyDistinct = deduplicateRoutes(rawCandidates).take(3)
             distinctRoutes.addAll(geoapifyDistinct)
 
             // If fewer than 2 distinct routes, apply the "via" waypoint trick to guarantee a genuine alternative
@@ -611,11 +633,9 @@ object GeoapifyService {
                 try {
                     val req = Request.Builder().url(viaUrl).build()
                     val resp = client.newCall(req).execute()
-                    if (resp.isSuccessful) {
-                        val parsed = parseGeoapifyRoutingJson(resp.body?.string().orEmpty(), "alternative_via")
-                        if (parsed != null && isGeometricallyDistinct(parsed.coordinates, distinctRoutes)) {
-                            distinctRoutes.add(parsed)
-                        }
+                    val parsed = if (resp.isSuccessful) parseGeoapifyRoutingJson(resp.body?.string().orEmpty(), "alternative_via") else null
+                    if (parsed != null && isGeometricallyDistinct(parsed.coordinates, distinctRoutes) && distinctRoutes.size < 3) {
+                        distinctRoutes.add(parsed)
                     }
                 } catch (e: Exception) {
                     Log.w(TAG, "Via route alternative failed: ${e.message}")
@@ -628,6 +648,80 @@ object GeoapifyService {
             return@withContext emptyList()
         }
 
+        // SIMPLIFY POLYLINES (Douglas-Peucker) BEFORE enrichment & scoring — long polylines are the
+        // single biggest multiplier for the per-segment loops below.
+        distinctRoutes.forEachIndexed { i, candidate ->
+            val simplified = simplifyRouteGeometry(candidate.coordinates, maxPoints = 300)
+            distinctRoutes[i] = candidate.copy(coordinates = simplified)
+        }
+
+        if (!enrichWithCorridor) {
+            // FAST PATH: construct route options immediately WITHOUT any corridor/Overpass calls.
+            val fastOptions = buildRouteOptions(
+                distinctRoutes = distinctRoutes,
+                corridorDataForRoute = { null },
+                originName = originName,
+                destinationName = destinationName,
+                intermediateNames = intermediateNames,
+                intermediatePoints = intermediatePoints,
+                sourceCoord = sourceCoord,
+                destCoord = destCoord,
+                timeOfDay = timeOfDay,
+                incidentZones = incidentZones
+            )
+            Log.d(TAG, "ROUTE_PERF routing_total=${System.currentTimeMillis() - tRoutingStart}ms routes=${fastOptions.size}")
+            return@withContext fastOptions
+        }
+
+        // ENRICHED (LEGACY) PATH: fetch corridor data and calculate safety scores
+        val enrichmentStart = System.currentTimeMillis()
+        val corridors = distinctRoutes.map { candidate ->
+            async {
+                val durationMins = max(1, (candidate.durationSeconds / 60.0).toInt())
+                corridorRepo.fetchCorridorData(candidate.coordinates, durationMins)
+            }
+        }.awaitAll()
+
+        val finalOptions = buildRouteOptions(
+            distinctRoutes = distinctRoutes,
+            corridorDataForRoute = { corridors[it] },
+            originName = originName,
+            destinationName = destinationName,
+            intermediateNames = intermediateNames,
+            intermediatePoints = intermediatePoints,
+            sourceCoord = sourceCoord,
+            destCoord = destCoord,
+            timeOfDay = timeOfDay,
+            incidentZones = incidentZones
+        )
+
+        Log.d(TAG, "ROUTE_PERF corridor_enrichment_total=${System.currentTimeMillis() - enrichmentStart}ms routes=${finalOptions.size}")
+
+        synchronized(routeCache) {
+            routeCache[cacheKey] = finalOptions
+        }
+        clearError()
+        return@withContext finalOptions
+    }
+
+    // Marker object distinguishing "not yet enriched" corridor placeholder
+    /**
+     * Shared builder that turns parsed routing candidates into RouteOption models.
+     * `corridorDataForRoute(i)` returns null while enrichment is pending (fast path):
+     * scores stay withheld (never defaulted to a "safe" value) and the UI skeleton runs.
+     */
+    private fun buildRouteOptions(
+        distinctRoutes: List<ParsedGeoapifyRoute>,
+        corridorDataForRoute: (Int) -> com.example.saferoute.data.model.RouteCorridorData?,
+        originName: String,
+        destinationName: String,
+        intermediateNames: List<String>,
+        intermediatePoints: List<Pair<Double, Double>>,
+        sourceCoord: Pair<Double, Double>,
+        destCoord: Pair<Double, Double>,
+        timeOfDay: TimeOfDay = TimeOfDay.DUSK,
+        incidentZones: List<IncidentZone> = emptyList()
+    ): List<RouteOption> {
         // Construct waypoints models
         val sourceWaypoint = Waypoint(name = originName, isSource = true, lat = sourceCoord.first, lng = sourceCoord.second)
         val destWaypoint = Waypoint(name = destinationName, isDestination = true, lat = destCoord.first, lng = destCoord.second)
@@ -637,20 +731,11 @@ object GeoapifyService {
         }
         val allWaypoints = listOf(sourceWaypoint) + stopWaypoints + listOf(destWaypoint)
 
-        // Fetch corridor data and calculate safety scores in parallel
-        val corridorDeferred = distinctRoutes.map { candidate ->
-            async {
-                val durationMins = max(1, (candidate.durationSeconds / 60.0).toInt())
-                corridorRepo.fetchCorridorData(candidate.coordinates, durationMins)
-            }
-        }
-        val corridors = corridorDeferred.awaitAll()
-
         val finalOptions = mutableListOf<RouteOption>()
 
         for (i in distinctRoutes.indices) {
             val candidate = distinctRoutes[i]
-            val corridor = corridors[i]
+            val corridor = corridorDataForRoute(i)
             val coords = candidate.coordinates
             val distKm = Math.round((candidate.distanceMeters / 1000.0) * 10.0) / 10.0
             val durMins = max(1, (candidate.durationSeconds / 60.0).toInt())
@@ -660,15 +745,6 @@ object GeoapifyService {
                 1 -> "opt_balanced"
                 else -> "opt_alt_$i"
             }
-
-            val safetyDetails = SafetyCalculator.calculateRouteSafetyFromCorridor(
-                routeIndex = i,
-                routeCoordinates = coords,
-                corridorData = corridor,
-                timeOfDay = timeOfDay,
-                incidentZones = incidentZones,
-                routeId = routeId
-            )
 
             val prominentRoad = candidate.prominentStreet.ifBlank {
                 if (i == 0) "Arterial Expressway" else "Commercial Avenue"
@@ -681,10 +757,30 @@ object GeoapifyService {
             }
 
             val summaryText = "Route via $prominentRoad (${distKm} km, ${durMins} mins)"
+
+            val safetyDetails = if (corridor != null) {
+                SafetyCalculator.calculateRouteSafetyFromCorridor(
+                    routeIndex = i,
+                    routeCoordinates = coords,
+                    corridorData = corridor,
+                    timeOfDay = timeOfDay,
+                    incidentZones = incidentZones,
+                    routeId = routeId
+                )
+            } else {
+                // Pending state: NO score is invented for missing data — the card shows shimmer chips
+                SafetyScoreDetails(
+                    compositeScore = 0,
+                    tierReason = "Calculating safety from live corridor data…",
+                    dataConfidence = DataConfidence.LOW,
+                    isEnrichmentPending = true
+                )
+            }
+
             val warningNote = safetyDetails.reliabilityWarning ?: ""
 
-            val segments = createVisualSegments(coords, corridor, routeTitle)
-            val legs = buildLegs(allWaypoints, distKm, durMins, safetyDetails.compositeScore)
+            val segments = if (corridor != null) createVisualSegments(coords, corridor, routeTitle) else emptyList()
+            val legs = buildLegs(allWaypoints, distKm, durMins, if (safetyDetails.compositeScore > 0) safetyDetails.compositeScore else 70)
 
             finalOptions.add(
                 RouteOption(
@@ -703,17 +799,140 @@ object GeoapifyService {
                     waypoints = allWaypoints,
                     legs = legs,
                     turnInstructions = candidate.instructions,
-                    places = corridor.places,
-                    corridorData = corridor
+                    places = corridor?.places ?: emptyList(),
+                    corridorData = corridor ?: com.example.saferoute.data.model.RouteCorridorData()
                 )
             )
         }
+        return finalOptions
+    }
 
-        synchronized(routeCache) {
-            routeCache[cacheKey] = finalOptions
+    /**
+     * Douglas-Peucker polyline simplification, iterative (stack-based) so long routes
+     * never risk deep recursion. Applied BEFORE enrichment/scoring to cut per-point loops.
+     */
+    fun simplifyRouteGeometry(
+        points: List<Pair<Double, Double>>,
+        maxPoints: Int = 300
+    ): List<Pair<Double, Double>> {
+        if (points.size <= maxPoints) return points
+
+        fun pointToSegmentDistance(p: Pair<Double, Double>, a: Pair<Double, Double>, b: Pair<Double, Double>): Double {
+            val dx = b.first - a.first
+            val dy = b.second - a.second
+            val len2 = dx * dx + dy * dy
+            if (len2 == 0.0) {
+                val dlat = p.first - a.first
+                val dlng = p.second - a.second
+                return Math.sqrt(dlat * dlat + dlng * dlng) * 111000.0
+            }
+            val t = (((p.first - a.first) * dx + (p.second - a.second) * dy) / len2).coerceIn(0.0, 1.0)
+            val projLat = a.first + t * dx
+            val projLng = a.second + t * dy
+            val dlat = p.first - projLat
+            val dlng = p.second - projLng
+            return Math.sqrt(dlat * dlat + dlng * dlng) * 111000.0
+        }
+
+        var epsilon = 10.0
+        var result = points
+        var iterations = 0
+        while (result.size > maxPoints && iterations < 10) {
+            // Iterative douglas-peucker
+            val keep = BooleanArray(result.size)
+            keep[0] = true
+            keep[result.size - 1] = true
+            val stack = ArrayDeque<Pair<Int, Int>>()
+            stack.addLast(Pair(0, result.size - 1))
+            while (stack.isNotEmpty()) {
+                val (startIdx, endIdx) = stack.removeLast()
+                var maxDist = 0.0
+                var index = startIdx
+                for (i in startIdx + 1 until endIdx) {
+                    val d = pointToSegmentDistance(result[i], result[startIdx], result[endIdx])
+                    if (d > maxDist) {
+                        index = i
+                        maxDist = d
+                    }
+                }
+                if (maxDist > epsilon) {
+                    keep[index] = true
+                    stack.addLast(Pair(startIdx, index))
+                    stack.addLast(Pair(index, endIdx))
+                }
+            }
+            result = result.filterIndexed { idx, _ -> keep[idx] }
+            epsilon *= 1.6
+            iterations++
+        }
+        return result
+    }
+
+    /**
+     * Background enrichment pass applied AFTER routes are already visible.
+     * Runs corridor (Overpass) lookup, safety scoring and road-risk matching per route
+     * in parallel and calls [onRouteEnriched] progressively so route cards fill in as
+     * each route finishes (with routeId). Corridor calls are capped at 6 s.
+     */
+    suspend fun enrichRoutesWithCorridor(
+        context: Context,
+        routes: List<RouteOption>,
+        timeOfDay: TimeOfDay,
+        incidentZones: List<IncidentZone>,
+        routeCacheKey: String = "",
+        onRouteEnriched: (routeId: String, enrichedRoute: RouteOption) -> Unit = { _, _ -> }
+    ): List<RouteOption> = withContext(Dispatchers.IO) {
+        val corridorRepo = CorridorPlacesRepository.getInstance(context)
+        val enrichStart = System.currentTimeMillis()
+
+        val results = routes.map { route ->
+            async {
+                try {
+                    val durationMins = max(1, route.durationMinutes)
+                    // 15 s hard budget. CorridorPlacesRepository chunks routes > 25 km and
+                    // returns partial data on its own; this is only the last-resort guard.
+                    val corridor = withTimeoutOrNull(15_000) {
+                        corridorRepo.fetchCorridorData(route.pathCoordinates, durationMins)
+                    } ?: RouteCorridorData(
+                        // No data returned: stop the spinner and show a clear unavailable state.
+                        isPartialData = true,
+                        totalChunkCount = 1,
+                        failedChunkCount = 1,
+                        hasCorridorData = false
+                    )
+
+                    val safetyDetails = SafetyCalculator.calculateRouteSafetyFromCorridor(
+                        routeIndex = routes.indexOf(route).coerceAtLeast(0),
+                        routeCoordinates = route.pathCoordinates,
+                        corridorData = corridor,
+                        timeOfDay = timeOfDay,
+                        incidentZones = incidentZones,
+                        routeId = route.id
+                    )
+                    val enriched = route.copy(
+                        safetyDetails = safetyDetails,
+                        places = corridor.places,
+                        corridorData = corridor,
+                        warningNote = safetyDetails.reliabilityWarning ?: route.warningNote
+                    )
+                    onRouteEnriched(route.id, enriched)
+                    enriched
+                } catch (e: Exception) {
+                    Log.w(TAG, "Enrichment failed for ${route.id}: ${e.message}")
+                    onRouteEnriched(route.id, route)
+                    route
+                }
+            }
+        }.awaitAll()
+
+        Log.d(TAG, "ROUTE_PERF enrichment_total=${System.currentTimeMillis() - enrichStart}ms routes=${results.size}")
+
+        // Cache the enriched version so recompositions / revisits never recompute
+        if (routeCacheKey.isNotBlank()) {
+            synchronized(routeCache) { routeCache[routeCacheKey] = results }
         }
         clearError()
-        return@withContext finalOptions
+        results
     }
 
     private data class ParsedGeoapifyRoute(

@@ -67,6 +67,7 @@ import androidx.compose.runtime.mutableDoubleStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import kotlinx.coroutines.launch
 import androidx.compose.ui.Alignment
@@ -276,12 +277,14 @@ fun GoogleMapView(
     activeInstructionText: String? = null,
     groupMembers: List<GroupMember> = emptyList(),
     showControls: Boolean = true,
-    destinationName: String? = null
+    destinationName: String? = null,
+    onCenterChanged: ((Double, Double) -> Unit)? = null
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     val currentLang = com.example.saferoute.util.LocalAppLanguage.current
     val coroutineScope = rememberCoroutineScope()
+    val currentOnCenterChanged by rememberUpdatedState(onCenterChanged)
 
     // Initialize MapLibre instance once per context
     remember {
@@ -723,6 +726,14 @@ fun GoogleMapView(
                             .target(LatLng(latitude, longitude))
                             .zoom(CoimbatoreMapConfig.INITIAL_ZOOM)
                             .build()
+
+                        // Report camera center for "Pick on map" flows
+                        if (currentOnCenterChanged != null) {
+                            maplibreMap.addOnCameraMoveListener {
+                                val target = maplibreMap.cameraPosition?.target
+                                if (target != null) currentOnCenterChanged?.invoke(target.latitude, target.longitude)
+                            }
+                        }
 
                         // Marker click listener for POIs along route
                         maplibreMap.setOnMarkerClickListener { marker ->

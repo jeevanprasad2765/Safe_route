@@ -1,6 +1,7 @@
 package com.example.saferoute.ui.viewmodel
 
 import android.app.Application
+import android.content.Context
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.saferoute.data.db.AppDatabase
@@ -14,18 +15,23 @@ import com.example.saferoute.data.model.IncidentZone
 import com.example.saferoute.data.model.RouteOption
 import com.example.saferoute.data.model.TimeOfDay
 import com.example.saferoute.data.model.TurnInstruction
-import com.example.saferoute.data.firebase.FirebaseConnectionManager
-import com.example.saferoute.data.firebase.FirebaseStatusInfo
 import com.example.saferoute.data.repository.SafeRouteRepository
+import com.example.saferoute.data.firebase.AuthResult
+import com.example.saferoute.data.firebase.FirebaseAuthManager
+import com.example.saferoute.util.SosManager
 import com.example.saferoute.util.AppLanguage
 import com.example.saferoute.util.LanguageManager
+import com.google.firebase.auth.FirebaseAuth
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.async
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 
 sealed class ScreenState {
     object Splash : ScreenState()
@@ -54,6 +60,7 @@ class SafeRouteViewModel(application: Application) : AndroidViewModel(applicatio
         db.tripHistoryDao(),
         db.savedPlaceDao(),
         db.userProfileDao(),
+        db.userOnboardingDao(),
         application
     )
 
@@ -87,6 +94,26 @@ class SafeRouteViewModel(application: Application) : AndroidViewModel(applicatio
     private val _showSosDialog = MutableStateFlow(false)
     val showSosDialog: StateFlow<Boolean> = _showSosDialog.asStateFlow()
 
+    // ── Authentication state ──
+    private val _authUiState = MutableStateFlow<AuthUiState>(AuthUiState.Idle)
+    val authUiState: StateFlow<AuthUiState> = _authUiState.asStateFlow()
+
+    private val _authMessage = MutableStateFlow<String?>(null)
+    val authMessage: StateFlow<String?> = _authMessage.asStateFlow()
+
+    private val _resetPasswordMessage = MutableStateFlow<String?>(null)
+    val resetPasswordMessage: StateFlow<String?> = _resetPasswordMessage.asStateFlow()
+
+    private val _resetPasswordLoading = MutableStateFlow(false)
+    val resetPasswordLoading: StateFlow<Boolean> = _resetPasswordLoading.asStateFlow()
+
+    private val _authReady = MutableStateFlow(false)
+    val authReady: StateFlow<Boolean> = _authReady.asStateFlow()
+
+    // ── SOS execution state ──
+    private val _sosState = MutableStateFlow(SosUiState())
+    val sosState: StateFlow<SosUiState> = _sosState.asStateFlow()
+
     private val _activeRouteOptions = MutableStateFlow<List<RouteOption>>(emptyList())
     val activeRouteOptions: StateFlow<List<RouteOption>> = _activeRouteOptions.asStateFlow()
 
@@ -98,12 +125,6 @@ class SafeRouteViewModel(application: Application) : AndroidViewModel(applicatio
     private val _appLanguage = MutableStateFlow(AppLanguage.ENGLISH)
     val appLanguage: StateFlow<AppLanguage> = _appLanguage.asStateFlow()
 
-    // Voice SOS Settings
-    private val _isVoiceSosEnabled = MutableStateFlow(false)
-    val isVoiceSosEnabled: StateFlow<Boolean> = _isVoiceSosEnabled.asStateFlow()
-
-    private val _voiceSosTriggerPhrase = MutableStateFlow("Help me SafeRoute")
-    val voiceSosTriggerPhrase: StateFlow<String> = _voiceSosTriggerPhrase.asStateFlow()
 
     // Group Trip Mode
     private val _activeGroupTrip = MutableStateFlow(GroupTripSession())
@@ -112,10 +133,6 @@ class SafeRouteViewModel(application: Application) : AndroidViewModel(applicatio
     // Multiple Contact Trip Sharing (Names of contacts receiving live location)
     private val _sharedTripContacts = MutableStateFlow<Set<String>>(emptySet())
     val sharedTripContacts: StateFlow<Set<String>> = _sharedTripContacts.asStateFlow()
-
-    // Time-based Dusk Route Shift Banner State
-    private val _isDuskRouteShiftAvailable = MutableStateFlow(false)
-    val isDuskRouteShiftAvailable: StateFlow<Boolean> = _isDuskRouteShiftAvailable.asStateFlow()
 
     private val _routeErrorMessage = MutableStateFlow<String?>(null)
     val routeErrorMessage: StateFlow<String?> = _routeErrorMessage.asStateFlow()
@@ -132,15 +149,6 @@ class SafeRouteViewModel(application: Application) : AndroidViewModel(applicatio
         LanguageManager.setLanguage(language)
     }
 
-    fun toggleVoiceSos(enabled: Boolean) {
-        _isVoiceSosEnabled.value = enabled
-    }
-
-    fun setVoiceSosTriggerPhrase(phrase: String) {
-        if (phrase.isNotBlank()) {
-            _voiceSosTriggerPhrase.value = phrase
-        }
-    }
 
     fun startGroupTripMode(inviteCode: String = "SAFEROUTE-CBE-9842") {
         val mockMembers = listOf(
@@ -198,47 +206,153 @@ class SafeRouteViewModel(application: Application) : AndroidViewModel(applicatio
         _sharedTripContacts.value = emptySet()
     }
 
-    fun triggerDuskRouteShiftBanner(show: Boolean) {
-        _isDuskRouteShiftAvailable.value = show
-    }
-
     fun setTimeOfDay(time: TimeOfDay) {
         _timeOfDay.value = time
     }
 
 
+    private val authStateListener = FirebaseAuth.AuthStateListener { auth ->
+        _authReady.value = true
+        if (auth.currentUser == null && _currentScreen.value is ScreenState.Main) {
+            // Session was revoked/signed out externally: return to Auth, never leave a ghost session.
+            _currentScreen.value = ScreenState.Auth
+        }
+    }
+
     init {
         viewModelScope.launch {
             repository.initDefaultDataIfEmpty()
         }
+
+        try {
+            FirebaseAuthManager.auth?.addAuthStateListener(authStateListener)
+        } catch (e: Exception) {
+            android.util.Log.w("SafeRouteViewModel", "AuthStateListener unavailable: ${e.message}")
+        }
+
+        // FirebaseAuth already knows the persisted session synchronously in most launches.
+        _authReady.value = FirebaseAuthManager.auth != null
     }
 
+    /**
+     * Splash is allowed to finish only after Firebase has reported the persisted session.
+     * This guarantees reopening the app goes straight to Home for a signed-in user.
+     */
     fun onSplashFinished() {
-        val profile = userProfile.value
-        val firebaseUser = com.example.saferoute.data.firebase.FirebaseAuthManager.currentUser
-        if (firebaseUser != null && profile?.isLoggedIn == true) {
-            _currentScreen.value = ScreenState.Main
-        } else if (profile?.completedOnboarding == true) {
-            _currentScreen.value = ScreenState.Auth
-        } else {
-            _currentScreen.value = ScreenState.Onboarding
+        viewModelScope.launch {
+            if (!_authReady.value) {
+                withTimeoutOrNull(5_000) {
+                    _authReady.first { it }
+                }
+            }
+            val user = FirebaseAuthManager.currentUser
+            if (user == null) {
+                _currentScreen.value = ScreenState.Auth
+                return@launch
+            }
+
+            val completed = repository.restoreSession(
+                userId = user.uid,
+                email = user.email.orEmpty(),
+                name = user.displayName.orEmpty()
+            )
+            _currentScreen.value = if (completed) ScreenState.Main else ScreenState.Onboarding
+            _currentNavTab.value = "home"
         }
     }
 
     fun finishOnboarding(contactName: String, contactPhone: String, contactRel: String) {
         viewModelScope.launch {
-            repository.insertContact(contactName, contactPhone, contactRel, true)
-            repository.setOnboardingCompleted(true)
-            _currentScreen.value = ScreenState.Auth
+            if (contactName.isNotBlank() && contactPhone.isNotBlank()) {
+                repository.insertContact(contactName, contactPhone, contactRel.ifBlank { "Contact" }, true)
+            }
+
+            val user = FirebaseAuthManager.currentUser
+            if (user != null) {
+                repository.setOnboardingCompleted(true)
+                repository.setOnboardingCompletedForUser(user.uid, true)
+                _currentScreen.value = ScreenState.Main
+                _currentNavTab.value = "home"
+            } else {
+                repository.setOnboardingCompleted(true)
+                _currentScreen.value = ScreenState.Auth
+            }
         }
     }
 
-    fun loginUser(userId: String, email: String, name: String) {
+    // ── Real authentication actions (launched from the ViewModel scope) ──
+
+    fun signInWithGoogle(activityContext: Context) {
+        if (_authUiState.value is AuthUiState.Loading) return
+        _authUiState.value = AuthUiState.Loading
         viewModelScope.launch {
-            repository.logInUser(userId, email, name)
-            repository.setOnboardingCompleted(true)
-            _currentScreen.value = ScreenState.Main
+            val result = FirebaseAuthManager.signInWithGoogle(activityContext)
+            handleAuthResult(result)
         }
+    }
+
+    fun signInWithEmail(name: String, email: String, password: String, isSignUp: Boolean) {
+        if (_authUiState.value is AuthUiState.Loading) return
+        _authUiState.value = AuthUiState.Loading
+        viewModelScope.launch {
+            val result = if (isSignUp) {
+                FirebaseAuthManager.signUpWithEmail(name, email, password)
+            } else {
+                FirebaseAuthManager.logInWithEmail(email, password)
+            }
+            handleAuthResult(result)
+        }
+    }
+
+    private suspend fun handleAuthResult(result: AuthResult) {
+        when (result) {
+            is AuthResult.Success -> {
+                val completedOnboarding = repository.logInUser(
+                    userId = result.uid,
+                    email = result.email,
+                    name = result.name,
+                    isNewUser = result.isNewUser
+                )
+                _authUiState.value = AuthUiState.Idle
+                _authMessage.value = if (result.isNewUser) {
+                    "Welcome, ${result.name}"
+                } else {
+                    "Welcome back, ${result.name}"
+                }
+                _currentScreen.value = if (completedOnboarding) ScreenState.Main else ScreenState.Onboarding
+                _currentNavTab.value = "home"
+            }
+            is AuthResult.Error -> {
+                _authUiState.value = AuthUiState.Error(result.message)
+            }
+        }
+    }
+
+    fun clearAuthMessage() {
+        _authMessage.value = null
+    }
+
+    fun clearAuthError() {
+        if (_authUiState.value is AuthUiState.Error) {
+            _authUiState.value = AuthUiState.Idle
+        }
+    }
+
+    fun resetPassword(email: String) {
+        if (_resetPasswordLoading.value) return
+        _resetPasswordLoading.value = true
+        _resetPasswordMessage.value = null
+        viewModelScope.launch {
+            val result = FirebaseAuthManager.sendPasswordReset(email)
+            _resetPasswordLoading.value = false
+            _resetPasswordMessage.value = result.getOrNull()
+                ?: result.exceptionOrNull()?.message
+                ?: "Could not send the reset email."
+        }
+    }
+
+    fun clearResetPasswordMessage() {
+        _resetPasswordMessage.value = null
     }
 
     // Real User Location Coordinates (Acquired via Accompanist Permission Flow)
@@ -264,6 +378,28 @@ class SafeRouteViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
 
+    // Last request parameters for one-tap retry after timeout
+    private data class LastRouteRequest(
+        val source: String,
+        val destination: String,
+        val waypoints: List<String>,
+        val sourceCoordinates: Pair<Double, Double>?,
+        val destinationCoordinates: Pair<Double, Double>?
+    )
+    private var lastRouteRequest: LastRouteRequest? = null
+
+    fun retryLastRouteRequest() {
+        lastRouteRequest?.let { req ->
+            calculateMultiStopRoute(
+                source = req.source,
+                destination = req.destination,
+                waypoints = req.waypoints,
+                sourceCoordinates = req.sourceCoordinates,
+                destinationCoordinates = req.destinationCoordinates
+            )
+        }
+    }
+
     fun calculateMultiStopRoute(
         source: String = "My Location",
         destination: String = "TIDEL Park, Peelamedu",
@@ -275,29 +411,50 @@ class SafeRouteViewModel(application: Application) : AndroidViewModel(applicatio
         val src = source.ifBlank { _userLocationDisplayName.value }
         val dst = destination.ifBlank { "TIDEL Park, Peelamedu" }
         _routeErrorMessage.value = null
+        lastRouteRequest = LastRouteRequest(source, destination, waypoints, sourceCoordinates, destinationCoordinates)
+        val requestStart = System.currentTimeMillis()
 
         viewModelScope.launch {
             _isLoadingRoute.value = true
 
-            // 1. Resolve source coordinates (use live GPS for 'My Location', never a fixed place)
-            val resolvedSourceCoords: Pair<Double, Double>? = when {
-                sourceCoordinates != null -> sourceCoordinates
-                src.startsWith("My Location", ignoreCase = true) -> _userCoordinates.value ?: com.example.saferoute.util.LocationHelper.getCurrentCoordinates(getApplication())
-                else -> {
-                    val res = com.example.saferoute.data.network.GeoapifyService.geocodePlace(src)
-                    if (res != null) Pair(res.latitude, res.longitude) else null
+            val geocodeStart = System.currentTimeMillis()
+
+            // 1+2+3: Resolve source / destination / waypoints coordinates IN PARALLEL
+            // (live GPS for 'My Location', never a fixed place)
+            suspend fun coordOf(name: String, override: Pair<Double, Double>?, useLiveGps: Boolean): Pair<Double, Double>? {
+                if (override != null) return override
+                if (useLiveGps) {
+                    val stored = _userCoordinates.value
+                    if (stored != null) return stored
+                    return com.example.saferoute.util.LocationHelper.getCurrentCoordinates(getApplication())
                 }
+                return geocodePlaceCached(name)?.let { geocoded -> Pair(geocoded.latitude, geocoded.longitude) }
             }
 
-            // 2. Resolve destination coordinates
-            val resolvedDestCoords: Pair<Double, Double>? = when {
-                destinationCoordinates != null -> destinationCoordinates
-                dst.startsWith("My Location", ignoreCase = true) -> _userCoordinates.value ?: com.example.saferoute.util.LocationHelper.getCurrentCoordinates(getApplication())
-                else -> {
-                    val res = com.example.saferoute.data.network.GeoapifyService.geocodePlace(dst)
-                    if (res != null) Pair(res.latitude, res.longitude) else null
+            val (resolvedSourceCoords, resolvedDestCoords, resolvedWaypointsData) = kotlinx.coroutines.coroutineScope {
+                val deferredSource = async {
+                    coordOf(src, sourceCoordinates, src.startsWith("My Location", ignoreCase = true))
                 }
+                val deferredDest = async {
+                    coordOf(dst, destinationCoordinates, dst.startsWith("My Location", ignoreCase = true))
+                }
+                val deferredWaypoints = waypoints.filter { it.isNotBlank() }.map { wp ->
+                    async { Pair(wp, geocodePlaceCached(wp)) }
+                }
+                Triple(
+                    deferredSource.await(),
+                    deferredDest.await(),
+                    deferredWaypoints.mapNotNull { def ->
+                        val (wp, res) = def.await()
+                        res?.let { Pair(wp, Pair(it.latitude, it.longitude)) }
+                    }
+                )
             }
+
+            android.util.Log.d(
+                "ROUTE_PERF",
+                "geocoding=${System.currentTimeMillis() - geocodeStart}ms (source=${resolvedSourceCoords != null}, dest=${resolvedDestCoords != null}, stops=${resolvedWaypointsData.size})"
+            )
 
             if (resolvedSourceCoords == null || resolvedDestCoords == null) {
                 val errorMsg = com.example.saferoute.data.network.GeoapifyService.lastErrorMessage.value ?: "Couldn't find that place"
@@ -314,14 +471,7 @@ class SafeRouteViewModel(application: Application) : AndroidViewModel(applicatio
                 "Resolved source coordinates: lat=${resolvedSourceCoords.first}, lng=${resolvedSourceCoords.second}; destination coordinates: lat=${resolvedDestCoords.first}, lng=${resolvedDestCoords.second}"
             )
 
-            val resolvedWaypointsData = mutableListOf<Pair<String, Pair<Double, Double>>>()
-            for (wp in waypoints.filter { it.isNotBlank() }) {
-                val res = com.example.saferoute.data.network.GeoapifyService.geocodePlace(wp)
-                if (res != null) {
-                    resolvedWaypointsData.add(Pair(wp, Pair(res.latitude, res.longitude)))
-                }
-            }
-
+            val routingStart = System.currentTimeMillis()
             val routes = repository.computeRealRoutes(
                 originName = src,
                 destinationName = dst,
@@ -331,6 +481,7 @@ class SafeRouteViewModel(application: Application) : AndroidViewModel(applicatio
                 timeOfDay = _timeOfDay.value,
                 prioritizeSafety = _prioritizeSafety.value
             )
+            android.util.Log.d("ROUTE_PERF", "routing=${System.currentTimeMillis() - routingStart}ms routes=${routes.size}")
 
             val finalRoutes = if (routes.isNotEmpty()) {
                 routes
@@ -354,7 +505,7 @@ class SafeRouteViewModel(application: Application) : AndroidViewModel(applicatio
                         "Duration=${r.durationMinutes}m -> Score=${r.safetyDetails.compositeScore}/100 " +
                         "[Lighting=${r.safetyDetails.lightingFactor}, Crowd=${r.safetyDetails.crowdDensityFactor}, " +
                         "Incident=${r.safetyDetails.incidentHistoryFactor}, TimeOfDayFactor=${r.safetyDetails.timeOfDayFactor}, " +
-                        "IsRecommended=${r.isRecommended}]"
+                        "IsRecommended=${r.isRecommended}, Pending=${r.safetyDetails.isEnrichmentPending}]"
                 )
             }
 
@@ -366,6 +517,7 @@ class SafeRouteViewModel(application: Application) : AndroidViewModel(applicatio
                 return@launch
             }
 
+            // ── SHOW ROUTES IMMEDIATELY — enrichment continues in the background ──
             _activeRouteOptions.value = finalRoutes
             _selectedRouteId.value = finalRoutes.firstOrNull()?.id ?: "opt_safe"
             _currentScreen.value = ScreenState.RouteRecommendations(
@@ -374,8 +526,49 @@ class SafeRouteViewModel(application: Application) : AndroidViewModel(applicatio
                 waypoints = waypoints
             )
             _isLoadingRoute.value = false
+            android.util.Log.d("ROUTE_PERF", "routes_visible_after=${System.currentTimeMillis() - requestStart}ms from request start")
+
+            // ── BACKGROUND ENRICHMENT (corridor/POI + risk matching + scoring) ──
+            val enrichStart = System.currentTimeMillis()
+            val enriched = repository.enrichRoutesInBackground(
+                routes = finalRoutes,
+                timeOfDay = _timeOfDay.value,
+                prioritizeSafety = _prioritizeSafety.value,
+                incidentZones = repository.getIncidentZones(),
+                routeCacheKey = com.example.saferoute.data.network.GeoapifyService.buildRouteCacheKey(
+                    listOf(resolvedSourceCoords) + resolvedWaypointsData.map { it.second } + listOf(resolvedDestCoords),
+                    _timeOfDay.value,
+                    repository.getIncidentZones().size
+                ),
+                onRouteEnriched = { routeId, enrichedRoute ->
+                    // Progressive fill: replace the matching entry so chips populate one by one
+                    isActiveRouteStale(enrichedRoute.id).also { isSameRequest ->
+                        if (isSameRequest) {
+                            _activeRouteOptions.value = _activeRouteOptions.value.map {
+                                if (it.id == enrichedRoute.id) enrichedRoute else it
+                            }
+                        }
+                    }
+                }
+            )
+            android.util.Log.d("ROUTE_PERF", "enrichment=${System.currentTimeMillis() - enrichStart}ms total_request=${System.currentTimeMillis() - requestStart}ms")
+
+            // Only replace the final enriched list if a new request hasn't already replaced it
+            if (_currentScreen.value is ScreenState.RouteRecommendations) {
+                _activeRouteOptions.value = enriched
+            }
         }
     }
+
+    /** Guards progressive updates: only apply enrichment to the request the screen is currently showing. */
+    private fun isActiveRouteStale(routeId: String): Boolean {
+        val idsCurrent = _activeRouteOptions.value.map { it.id }
+        return idsCurrent.contains(routeId)
+    }
+
+    /** Cached geocode wrapper (GeoapifyService already memoizes; keeps call sites clean). */
+    private suspend fun geocodePlaceCached(name: String) =
+        com.example.saferoute.data.network.GeoapifyService.geocodePlace(name)
 
     fun selectDestination(destination: String) {
         calculateMultiStopRoute(
@@ -452,11 +645,196 @@ class SafeRouteViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     fun openSosDialog() {
+        _sosState.value = SosUiState(phase = SosPhase.COUNTDOWN)
         _showSosDialog.value = true
     }
 
     fun closeSosDialog() {
+        if (_sosState.value.isSending) return
         _showSosDialog.value = false
+        _sosState.value = SosUiState()
+    }
+
+    fun showSosPermissionRationale() {
+        _sosState.value = _sosState.value.copy(phase = SosPhase.PERMISSION_RATIONALE)
+    }
+
+    /**
+     * Called when the 5-second countdown reaches zero. If call/SMS permissions were already
+     * granted we start immediately; otherwise we show our own explanation before the system
+     * permission prompt appears.
+     */
+    fun onSosCountdownFinished() {
+        val context = getApplication<Application>()
+        if (SosManager.hasCallPermission(context) && SosManager.hasSmsPermission(context)) {
+            triggerSosAlerts()
+        } else {
+            showSosPermissionRationale()
+        }
+    }
+
+    /** Called after the countdown and (if needed) after the runtime permission result. */
+    fun triggerSosAlerts() {
+        if (_sosState.value.isSending) return
+        val contactSnapshot = contacts.value
+        val context = getApplication<Application>()
+
+        viewModelScope.launch {
+            val alsoCall112 = repository.getAlsoCall112()
+            val userName = userProfile.value?.name
+                ?.takeIf { it.isNotBlank() }
+                ?: FirebaseAuthManager.currentUser?.displayName
+                ?: "A SafeRoute user"
+
+            val primaryContact = contactSnapshot.firstOrNull()
+            val initialSteps = buildList {
+                add(
+                    SosStep(
+                        id = "call",
+                        title = if (primaryContact != null) "Calling ${primaryContact.name}" else "Calling emergency contact"
+                    )
+                )
+                add(SosStep(id = "sms", title = "Sending SMS to ${contactSnapshot.size} contacts"))
+                if (alsoCall112) add(SosStep(id = "112", title = "Calling 112"))
+            }
+            _sosState.value = SosUiState(
+                phase = SosPhase.SENDING,
+                steps = initialSteps,
+                isSending = true
+            )
+
+            val latitude = _userCoordinates.value?.first
+            val longitude = _userCoordinates.value?.second
+            val effectiveLocation = _userCoordinates.value ?: try {
+                withTimeoutOrNull(2_500) {
+                    com.example.saferoute.util.LocationHelper.getCurrentCoordinates(context)
+                }
+            } catch (_: Throwable) {
+                null
+            }
+            val message = SosManager.buildEmergencyMessage(
+                userName = userName,
+                latitude = effectiveLocation?.first,
+                longitude = effectiveLocation?.second
+            )
+
+            var callStarted = false
+            if (primaryContact == null) {
+                updateSosStep(
+                    "call",
+                    SosStepStatus.FAILED,
+                    "No emergency contact saved. Add one in Profile first."
+                )
+            } else {
+                updateSosStep("call", SosStepStatus.RUNNING, "Dialing ${primaryContact.phone}…")
+                val outcome = SosManager.startCall(context, primaryContact.phone)
+                callStarted = outcome.started
+                if (outcome.started) {
+                    updateSosStep(
+                        "call",
+                        SosStepStatus.SUCCESS,
+                        if (outcome.usedDialerFallback) {
+                            "Dialer opened — tap the call button to connect."
+                        } else {
+                            "Call started to ${primaryContact.name}."
+                        }
+                    )
+                } else {
+                    updateSosStep(
+                        "call",
+                        SosStepStatus.FAILED,
+                        outcome.error ?: "Could not start the call."
+                    )
+                }
+            }
+
+            var smsSent = 0
+            val smsFailures = mutableListOf<String>()
+            if (contactSnapshot.isEmpty()) {
+                updateSosStep(
+                    "sms",
+                    SosStepStatus.FAILED,
+                    "No emergency contacts saved, so no SMS could be sent."
+                )
+            } else {
+                updateSosStep("sms", SosStepStatus.RUNNING, "Sending location link…")
+                for (contact in contactSnapshot) {
+                    val result = SosManager.sendSms(context, contact.phone, message)
+                    if (result.sent) {
+                        smsSent++
+                    } else {
+                        smsFailures.add("${contact.name}: ${result.error ?: "failed"}")
+                    }
+                }
+                when {
+                    smsSent > 0 && smsFailures.isEmpty() ->
+                        updateSosStep(
+                            "sms",
+                            SosStepStatus.SUCCESS,
+                            "SMS sent to $smsSent ${if (smsSent == 1) "contact" else "contacts"}."
+                        )
+                    smsSent > 0 ->
+                        updateSosStep(
+                            "sms",
+                            SosStepStatus.SUCCESS,
+                            "SMS sent to $smsSent of ${contactSnapshot.size} contacts. Failed — ${smsFailures.joinToString("; ")}"
+                        )
+                    else ->
+                        updateSosStep(
+                            "sms",
+                            SosStepStatus.FAILED,
+                            "SMS failed for all contacts. ${smsFailures.joinToString("; ")}"
+                        )
+                }
+            }
+
+            var call112Started = false
+            if (alsoCall112) {
+                updateSosStep("112", SosStepStatus.RUNNING, "Dialing 112…")
+                val policeOutcome = SosManager.startCall(context, "112")
+                call112Started = policeOutcome.started
+                if (policeOutcome.started) {
+                    updateSosStep(
+                        "112",
+                        SosStepStatus.SUCCESS,
+                        if (policeOutcome.usedDialerFallback) "Dialer opened for 112." else "112 call started."
+                    )
+                } else {
+                    updateSosStep("112", SosStepStatus.FAILED, policeOutcome.error ?: "Could not call 112.")
+                }
+            }
+
+            val allSmsSent = contactSnapshot.isNotEmpty() && smsSent == contactSnapshot.size
+            val summary = when {
+                callStarted && allSmsSent -> "Emergency alert sent"
+                callStarted || smsSent > 0 || call112Started ->
+                    "Emergency alert partially sent — review the steps above"
+                else -> "Emergency alert could not be sent"
+            }
+            val alertStarted = callStarted || smsSent > 0 || call112Started
+
+            _sosState.value = _sosState.value.copy(
+                phase = SosPhase.RESULT,
+                isSending = false,
+                summary = summary,
+                canRetry = !(callStarted && allSmsSent && (!alsoCall112 || call112Started)),
+                alertStarted = alertStarted
+            )
+        }
+    }
+
+    fun retrySosAlerts() {
+        if (_sosState.value.isSending) return
+        _sosState.value = SosUiState(phase = SosPhase.SENDING)
+        triggerSosAlerts()
+    }
+
+    private fun updateSosStep(id: String, status: SosStepStatus, detail: String?) {
+        _sosState.value = _sosState.value.copy(
+            steps = _sosState.value.steps.map { step ->
+                if (step.id == id) step.copy(status = status, detail = detail) else step
+            }
+        )
     }
 
     fun addContact(name: String, phone: String, relationship: String) {
@@ -477,16 +855,33 @@ class SafeRouteViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
 
+    fun updateSavedPlace(place: SavedPlaceEntity) {
+        viewModelScope.launch {
+            repository.updatePlace(place)
+        }
+    }
+
+    fun deleteSavedPlace(place: SavedPlaceEntity) {
+        viewModelScope.launch {
+            repository.deletePlace(place)
+        }
+    }
+
     fun updateSafetyPreference(pref: String) {
         viewModelScope.launch {
             repository.updateSafetyPreference(pref)
         }
     }
 
-    fun setPlusMembership(isPlus: Boolean) {
+    fun setAlsoCall112(enabled: Boolean) {
         viewModelScope.launch {
-            repository.setPlusMembership(isPlus)
+            repository.setAlsoCall112(enabled)
         }
+    }
+
+    /** Re-runs the last route request, which also retries any chunks that timed out. */
+    fun retryEnrichment() {
+        retryLastRouteRequest()
     }
 
     fun getTurnInstructions(routeId: String): List<TurnInstruction> {
@@ -497,56 +892,6 @@ class SafeRouteViewModel(application: Application) : AndroidViewModel(applicatio
         return repository.getIncidentZones()
     }
 
-    // Firebase Cloud Sync
-    val firebaseStatus: StateFlow<FirebaseStatusInfo> = FirebaseConnectionManager.statusInfo
-
-    fun syncWithFirebase(onComplete: (Boolean, String) -> Unit = { _, _ -> }) {
-        viewModelScope.launch {
-            val profile = userProfile.firstOrNull() ?: UserProfileEntity()
-            val contactList = contacts.firstOrNull() ?: emptyList()
-            val placeList = savedPlaces.firstOrNull() ?: emptyList()
-            val tripList = tripHistory.firstOrNull() ?: emptyList()
-
-            val userId = profile.userId.ifBlank { "user_default" }
-            val result = FirebaseConnectionManager.triggerFullCloudSync(
-                userId = userId,
-                profile = profile,
-                contacts = contactList,
-                places = placeList,
-                trips = tripList
-            )
-
-            result.fold(
-                onSuccess = { count ->
-                    onComplete(true, "Successfully synced $count records to Firebase Firestore!")
-                },
-                onFailure = { ex ->
-                    onComplete(false, ex.localizedMessage ?: "Sync failed. Please check connection.")
-                }
-            )
-        }
-    }
-
-    fun configureCustomFirebase(
-        projectId: String,
-        apiKey: String,
-        appId: String,
-        onResult: (Boolean, String) -> Unit
-    ) {
-        viewModelScope.launch {
-            val result = FirebaseConnectionManager.configureCustomFirebase(
-                context = getApplication(),
-                projectId = projectId,
-                apiKey = apiKey,
-                applicationId = appId
-            )
-            result.fold(
-                onSuccess = { msg -> onResult(true, msg) },
-                onFailure = { ex -> onResult(false, ex.localizedMessage ?: "Failed to configure Firebase.") }
-            )
-        }
-    }
-
     fun navigateHome() {
         _currentScreen.value = ScreenState.Main
         _currentNavTab.value = "home"
@@ -554,10 +899,22 @@ class SafeRouteViewModel(application: Application) : AndroidViewModel(applicatio
 
     fun logout() {
         viewModelScope.launch {
-            com.example.saferoute.data.firebase.FirebaseAuthManager.signOut()
             repository.logOutUser()
             _activeNavRoute.value = null
+            _currentNavTab.value = "home"
+            _showSosDialog.value = false
+            _sosState.value = SosUiState()
+            _authUiState.value = AuthUiState.Idle
+            _authMessage.value = null
             _currentScreen.value = ScreenState.Auth
         }
+    }
+
+    override fun onCleared() {
+        try {
+            FirebaseAuthManager.auth?.removeAuthStateListener(authStateListener)
+        } catch (_: Throwable) {
+        }
+        super.onCleared()
     }
 }

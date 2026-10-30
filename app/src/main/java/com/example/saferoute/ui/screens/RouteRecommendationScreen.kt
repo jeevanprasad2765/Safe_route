@@ -26,6 +26,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import com.example.saferoute.data.model.PlaceCategory
 import com.example.saferoute.util.appText
+import com.example.ui.theme.shimmer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowBack
@@ -35,6 +36,7 @@ import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.FlashOn
 import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Layers
 import androidx.compose.material.icons.filled.LocationOn
 import androidx.compose.material.icons.filled.MyLocation
@@ -81,6 +83,7 @@ import com.example.ui.theme.GlassSurfaceBorder
 import com.example.ui.theme.GlassSurfaceDark
 import com.example.ui.theme.SafeRouteBlue
 import com.example.ui.theme.SafeRouteTeal
+import com.example.ui.theme.SafetyAmber
 import com.example.ui.theme.SafetyGreen
 import com.example.ui.theme.SafetyRed
 import com.example.ui.theme.bounceClick
@@ -107,6 +110,7 @@ fun RouteRecommendationScreen(
     onPrioritizeSafetyToggle: (Boolean) -> Unit,
     onRouteSelected: (String) -> Unit,
     onOpenSafetyDetails: (RouteOption) -> Unit,
+    onRetryEnrichment: () -> Unit = {},
     onBack: () -> Unit
 ) {
     var currentSource by remember { mutableStateOf(sourceName) }
@@ -552,6 +556,69 @@ fun RouteRecommendationScreen(
                 }
             }
 
+            // Long routes can finish with some corridor chunks missing. Show what is ready and
+            // offer a retry for the rest instead of leaving cards stuck on "Calculating…".
+            val pendingOrPartial = routes.filter {
+                it.safetyDetails.isEnrichmentPending || it.corridorData.isPartialData
+            }
+            if (pendingOrPartial.isNotEmpty()) {
+                item {
+                    val allPending = routes.all { it.safetyDetails.isEnrichmentPending }
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(14.dp))
+                            .background(SafetyAmber.copy(alpha = 0.12f))
+                            .border(1.dp, SafetyAmber.copy(alpha = 0.4f), RoundedCornerShape(14.dp))
+                            .padding(12.dp)
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                imageVector = Icons.Default.Info,
+                                contentDescription = null,
+                                tint = SafetyAmber,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = if (allPending) {
+                                    "Safety data is still loading. You can retry if it doesn't finish."
+                                } else {
+                                    "Some corridor sections could not be loaded. Scores use available data only."
+                                },
+                                fontSize = 12.sp,
+                                color = Color(0xFFE2E8F0),
+                                lineHeight = 16.sp,
+                                modifier = Modifier.weight(1f)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Row(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(SafetyAmber.copy(alpha = 0.2f))
+                                    .clickable { onRetryEnrichment() }
+                                    .padding(horizontal = 10.dp, vertical = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Refresh,
+                                    contentDescription = null,
+                                    tint = SafetyAmber,
+                                    modifier = Modifier.size(14.dp)
+                                )
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text(
+                                    text = "Retry",
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = SafetyAmber
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
             items(routes) { route ->
                 val isSelected = route.id == selectedRouteId
 
@@ -596,16 +663,20 @@ fun RouteRecommendationScreen(
                             }
                             SafetyBadge(
                                 score = route.safetyDetails.compositeScore,
-                                confidence = route.safetyDetails.dataConfidence
+                                confidence = route.safetyDetails.dataConfidence,
+                                isPending = route.safetyDetails.isEnrichmentPending
                             )
                         }
 
                         Spacer(modifier = Modifier.height(6.dp))
 
-                        // Data Confidence Badge
-                        com.example.saferoute.ui.components.DataConfidenceBadge(
-                            confidence = route.safetyDetails.dataConfidence
-                        )
+                        // Data Confidence Badge (only once real data has arrived — pending state
+                        // shows skeleton shimmer chips instead of a misleading "Low")
+                        if (!route.safetyDetails.isEnrichmentPending) {
+                            com.example.saferoute.ui.components.DataConfidenceBadge(
+                                confidence = route.safetyDetails.dataConfidence
+                            )
+                        }
 
                         Spacer(modifier = Modifier.height(6.dp))
 
@@ -621,16 +692,17 @@ fun RouteRecommendationScreen(
 
                         Spacer(modifier = Modifier.height(4.dp))
 
-                        // Road-Accident Risk (Distinct from personal safety)
+                        // Road-Accident Risk (only when real risk data exists — a missing factor is
+                        // never shown as a message and never turned into a fake score)
                         val roadRisk = route.roadRiskDetails
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text(
-                                text = "Road-accident risk: ",
-                                fontSize = 12.sp,
-                                fontWeight = FontWeight.SemiBold,
-                                color = Color(0xFF94A3B8)
-                            )
-                            if (roadRisk != null && roadRisk.isAvailable) {
+                        if (roadRisk != null && roadRisk.isAvailable) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(
+                                    text = "Road-accident risk: ",
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = Color(0xFF94A3B8)
+                                )
                                 Text(
                                     text = roadRisk.roadRiskLevel.label,
                                     fontSize = 12.sp,
@@ -646,13 +718,6 @@ fun RouteRecommendationScreen(
                                         overflow = TextOverflow.Ellipsis
                                     )
                                 }
-                            } else {
-                                Text(
-                                    text = "Unavailable (limited data)",
-                                    fontSize = 12.sp,
-                                    fontWeight = FontWeight.Medium,
-                                    color = Color(0xFF64748B)
-                                )
                             }
                         }
 
@@ -667,10 +732,13 @@ fun RouteRecommendationScreen(
                             overflow = TextOverflow.Ellipsis
                         )
 
-                        // 4b: Real Places Along Route Summary Chips
+                        // 4b: Real Places Along Route Summary Chips (skeleton shimmer while
+                        // POI enrichment is still running in the background — never blocks routing)
                         val sd = route.safetyDetails
+                        val isPending = sd.isEnrichmentPending
                         val summaryChips = remember(sd, route.places) {
                             val list = mutableListOf<String>()
+                            if (sd.isEnrichmentPending) return@remember mutableListOf<String>()
                             if (sd.hospitalsCount > 0) list.add("${sd.hospitalsCount} ${if (sd.hospitalsCount == 1) "hospital" else "hospitals"}")
                             if (sd.pharmaciesCount > 0) list.add("${sd.pharmaciesCount} ${if (sd.pharmaciesCount == 1) "pharmacy" else "pharmacies"}")
                             if (sd.petrolPumpsCount > 0) list.add("${sd.petrolPumpsCount} ${if (sd.petrolPumpsCount == 1) "petrol pump" else "petrol pumps"}")
@@ -685,28 +753,43 @@ fun RouteRecommendationScreen(
                             list
                         }
 
-                        if (summaryChips.isNotEmpty()) {
-                            Spacer(modifier = Modifier.height(8.dp))
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .horizontalScroll(rememberScrollState()),
-                                horizontalArrangement = Arrangement.spacedBy(6.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                summaryChips.forEach { chipText ->
-                                    Surface(
-                                        shape = RoundedCornerShape(8.dp),
-                                        color = Color(0xFF1E293B),
-                                        border = BorderStroke(0.5.dp, Color(0xFF334155))
-                                    ) {
-                                        Text(
-                                            text = chipText,
-                                            fontSize = 11.sp,
-                                            color = Color(0xFFCBD5E1),
-                                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
-                                            fontWeight = FontWeight.Medium
+                        when {
+                            isPending -> {
+                                Spacer(modifier = Modifier.height(8.dp))
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    repeat(3) {
+                                        Box(
+                                            modifier = Modifier
+                                                .size(width = 78.dp, height = 22.dp)
+                                                .clip(RoundedCornerShape(8.dp))
+                                                .shimmer()
                                         )
+                                    }
+                                }
+                            }
+                            summaryChips.isNotEmpty() -> {
+                                Spacer(modifier = Modifier.height(8.dp))
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .horizontalScroll(rememberScrollState()),
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    summaryChips.forEach { chipText ->
+                                        Surface(
+                                            shape = RoundedCornerShape(8.dp),
+                                            color = Color(0xFF1E293B),
+                                            border = BorderStroke(0.5.dp, Color(0xFF334155))
+                                        ) {
+                                            Text(
+                                                text = chipText,
+                                                fontSize = 11.sp,
+                                                color = Color(0xFFCBD5E1),
+                                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                                                fontWeight = FontWeight.Medium
+                                            )
+                                        }
                                     }
                                 }
                             }

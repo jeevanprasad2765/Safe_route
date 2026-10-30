@@ -50,5 +50,17 @@ data class UserProfileEntity(
     val autoShareSosLocation: Boolean = true,
     val highContrastMode: Boolean = false,
     val isPlusMember: Boolean = false,
-    val completedOnboarding: Boolean = false
+    val completedOnboarding: Boolean = false,
+    val alsoCall112: Boolean = false
+)
+
+/**
+ * Per-user onboarding completion, so signing into a different account does not inherit
+ * another user's onboarding state. Mirrored to Firestore (best-effort).
+ */
+@Entity(tableName = "user_onboarding")
+data class UserOnboardingEntity(
+    @PrimaryKey val userId: String,
+    val completedOnboarding: Boolean,
+    val updatedAtEpochMs: Long = System.currentTimeMillis()
 )

@@ -38,8 +38,38 @@ fun SafetyBadge(
     score: Int,
     modifier: Modifier = Modifier,
     showLabel: Boolean = true,
-    confidence: DataConfidence = DataConfidence.HIGH
+    confidence: DataConfidence = DataConfidence.HIGH,
+    isPending: Boolean = false
 ) {
+    if (isPending) {
+        val greyColor = Color(0xFF94A3B8)
+        val shape = RoundedCornerShape(12.dp)
+        Row(
+            modifier = modifier
+                .testTag("safety_score_badge")
+                .clip(shape)
+                .background(greyColor.copy(alpha = 0.15f))
+                .border(1.dp, greyColor.copy(alpha = 0.35f), shape)
+                .padding(horizontal = 10.dp, vertical = 5.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(
+                imageVector = Icons.Default.Shield,
+                contentDescription = "Safety score calculating",
+                tint = greyColor,
+                modifier = Modifier.size(15.dp)
+            )
+            Spacer(modifier = Modifier.width(6.dp))
+            Text(
+                text = "Calculating…",
+                color = greyColor,
+                fontWeight = FontWeight.Bold,
+                fontSize = 12.sp
+            )
+        }
+        return
+    }
+
     if (confidence == DataConfidence.LOW || score <= 0) {
         val greyColor = Color(0xFF94A3B8)
         val shape = RoundedCornerShape(12.dp)

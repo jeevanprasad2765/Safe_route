@@ -1,6 +1,5 @@
 package com.example.saferoute.ui.screens
 
-import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
@@ -24,7 +23,6 @@ import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Group
 import androidx.compose.material.icons.filled.Mic
-import androidx.compose.material.icons.filled.NightsStay
 import androidx.compose.material.icons.filled.PersonAdd
 import androidx.compose.material.icons.filled.ShareLocation
 import androidx.compose.material.icons.filled.Shield
@@ -84,9 +82,6 @@ fun ActiveNavigationScreen(
     incidentZones: List<IncidentZone> = emptyList(),
     activeGroupTrip: GroupTripSession = GroupTripSession(),
     sharedTripContacts: Set<String> = emptySet(),
-    isVoiceSosEnabled: Boolean = false,
-    voiceSosTriggerPhrase: String = "Help me SafeRoute",
-    isDuskRouteShiftAvailable: Boolean = false,
     onToggleContactShare: (String) -> Unit = {},
     onStopAllSharing: () -> Unit = {},
     onSwitchRoute: () -> Unit = {},
@@ -103,7 +98,6 @@ fun ActiveNavigationScreen(
         mutableIntStateOf(currentLeg?.safetyScore ?: route.safetyDetails.compositeScore)
     }
     var showShareContactDialog by remember { mutableStateOf(false) }
-    var showDuskShiftBanner by remember { mutableStateOf(isDuskRouteShiftAvailable) }
 
     // Simulated progress auto-advance turn instructions
     LaunchedEffect(Unit) {
@@ -113,12 +107,6 @@ fun ActiveNavigationScreen(
                 currentInstructionIndex += 1
             }
         }
-    }
-
-    // Auto trigger dusk route shift recommendation after 4 seconds of navigation
-    LaunchedEffect(Unit) {
-        delay(4000)
-        showDuskShiftBanner = true
     }
 
     val instruction = instructions.getOrElse(currentInstructionIndex) { instructions.first() }
@@ -257,77 +245,6 @@ fun ActiveNavigationScreen(
                 }
             }
 
-            // DUSK ROUTE SHIFT RECOMMENDATION BANNER
-            AnimatedVisibility(visible = showDuskShiftBanner) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(top = 8.dp)
-                        .clip(RoundedCornerShape(18.dp))
-                        .background(SafeRouteBlue.copy(alpha = 0.95f))
-                        .border(1.dp, SafeRouteTeal.copy(alpha = 0.4f), RoundedCornerShape(18.dp))
-                        .padding(12.dp)
-                ) {
-                    Column {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(
-                                imageVector = Icons.Default.NightsStay,
-                                contentDescription = "Dusk Shift",
-                                tint = Color(0xFFFFD166),
-                                modifier = Modifier.size(20.dp)
-                            )
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text(
-                                text = LanguageManager.get("dusk_alert_title"),
-                                fontSize = 13.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = Color.White
-                            )
-                        }
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Text(
-                            text = LanguageManager.get("dusk_alert_sub"),
-                            fontSize = 11.sp,
-                            color = Color.White.copy(alpha = 0.85f)
-                        )
-                        Spacer(modifier = Modifier.height(10.dp))
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Box(
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .bounceClick(scaleDown = 0.95f) {
-                                        onSwitchRoute()
-                                        showDuskShiftBanner = false
-                                    }
-                                    .clip(RoundedCornerShape(12.dp))
-                                    .background(SafetyGreen)
-                                    .padding(vertical = 8.dp),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Text(
-                                    text = LanguageManager.get("switch_route"),
-                                    color = Color.Black,
-                                    fontSize = 12.sp,
-                                    fontWeight = FontWeight.Bold
-                                )
-                            }
-                            Box(
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .bounceClick(scaleDown = 0.95f) { showDuskShiftBanner = false }
-                                    .clip(RoundedCornerShape(12.dp))
-                                    .background(Color(0x22FFFFFF))
-                                    .border(1.dp, Color(0x44FFFFFF), RoundedCornerShape(12.dp))
-                                    .padding(vertical = 8.dp),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Text(text = LanguageManager.get("keep_current"), fontSize = 12.sp, color = Color.White)
-                            }
-                        }
-                    }
-                }
-            }
-
             // GROUP MEMBER ANOMALY ALERT BANNER
             val anomalyMember = activeGroupTrip.members.find { it.isStationaryAlert || it.isOffRoute }
             if (activeGroupTrip.isActive && anomalyMember != null) {
@@ -458,35 +375,6 @@ fun ActiveNavigationScreen(
             }
         }
 
-        // VOICE SOS ACTIVE BADGE (FLOATING RIGHT)
-        if (isVoiceSosEnabled) {
-            Box(
-                modifier = Modifier
-                    .align(Alignment.TopEnd)
-                    .padding(top = 220.dp, end = 16.dp)
-                    .bounceClick(scaleDown = 0.95f) { onTriggerSos() }
-                    .clip(RoundedCornerShape(16.dp))
-                    .background(SafetyRed.copy(alpha = 0.9f))
-                    .border(1.dp, SafetyRed, RoundedCornerShape(16.dp))
-                    .padding(horizontal = 10.dp, vertical = 6.dp)
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(
-                        imageVector = Icons.Default.Mic,
-                        contentDescription = "Voice SOS Active",
-                        tint = Color.White,
-                        modifier = Modifier.size(14.dp)
-                    )
-                    Spacer(modifier = Modifier.width(4.dp))
-                    Text(
-                        text = "Voice SOS Active ('$voiceSosTriggerPhrase')",
-                        fontSize = 10.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = Color.White
-                    )
-                }
-            }
-        }
 
         // PERSISTENT EMERGENCY SOS BUTTON (THUMB REACHABLE BOTTOM LEFT)
         SosFab(
@@ -593,13 +481,15 @@ fun ActiveNavigationScreen(
                         )
                         Spacer(modifier = Modifier.height(12.dp))
 
-                        val availableContacts = if (contacts.isNotEmpty()) contacts else listOf(
-                            EmergencyContactEntity(1, "Sarah Taylor", "+1 (555) 019-2834", "Sister", true),
-                            EmergencyContactEntity(2, "Anand Kumar", "+91 98765 11223", "Friend", false),
-                            EmergencyContactEntity(3, "Priya Sharma", "+91 98765 43210", "Colleague", false)
-                        )
+                        if (contacts.isEmpty()) {
+                            Text(
+                                text = "No emergency contacts yet. Add a contact in Profile first so they can receive your live trip.",
+                                fontSize = 13.sp,
+                                color = Color(0xFF94A3B8)
+                            )
+                        }
 
-                        availableContacts.forEach { contact ->
+                        contacts.forEach { contact ->
                             val isChecked = sharedTripContacts.contains(contact.name)
                             Row(
                                 modifier = Modifier

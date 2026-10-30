@@ -14,9 +14,10 @@ import com.example.saferoute.risk.RiskSegmentEntity
         SavedPlaceEntity::class,
         UserProfileEntity::class,
         RouteOverpassCacheEntity::class,
-        RiskSegmentEntity::class
+        RiskSegmentEntity::class,
+        UserOnboardingEntity::class
     ],
-    version = 5,
+    version = 6,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -26,6 +27,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun userProfileDao(): UserProfileDao
     abstract fun routeOverpassCacheDao(): RouteOverpassCacheDao
     abstract fun riskDao(): RiskDao
+    abstract fun userOnboardingDao(): UserOnboardingDao
 
     companion object {
         @Volatile

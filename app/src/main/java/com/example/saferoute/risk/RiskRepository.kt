@@ -29,6 +29,29 @@ class RiskRepository(
     private var cachedHourlyWeights: Map<Int, Float>? = null
     private var cachedBlackspots: List<IncidentZone>? = null
 
+    // In-memory cache of road-risk scores keyed by route geometry hash (24 h validity)
+    private val routeScoreCache = java.util.concurrent.ConcurrentHashMap<String, Pair<Long, RoadRiskScoreDetails>>()
+    private val routeScoreCacheTtlMs = 24 * 60 * 60 * 1000L
+
+    private fun routeGeometryKey(routeCoordinates: List<Pair<Double, Double>>): String {
+        val stride = max(1, routeCoordinates.size / 20)
+        val sb = StringBuilder()
+        for (i in routeCoordinates.indices step stride) {
+            val pt = routeCoordinates[i]
+            sb.append("${(pt.first * 1e4).toInt()},${(pt.second * 1e4).toInt()};")
+        }
+        return sb.toString()
+    }
+
+    private fun cachedRouteScore(key: String): RoadRiskScoreDetails? {
+        val entry = routeScoreCache[key] ?: return null
+        if (System.currentTimeMillis() - entry.first > routeScoreCacheTtlMs) {
+            routeScoreCache.remove(key)
+            return null
+        }
+        return entry.second
+    }
+
     init {
         loadModelMeta()
     }
@@ -223,6 +246,19 @@ class RiskRepository(
     }
 
     suspend fun scoreRoute(
+        routeCoordinates: List<Pair<Double, Double>>,
+        currentHour: Int? = null
+    ): RoadRiskScoreDetails = withContext(Dispatchers.IO) {
+        // 24h cache: identical geometry (same hash) never recomputes
+        val cacheKey = routeGeometryKey(routeCoordinates)
+        cachedRouteScore(cacheKey)?.let { return@withContext it }
+
+        val result = scoreRouteUncached(routeCoordinates, currentHour)
+        routeScoreCache[cacheKey] = Pair(System.currentTimeMillis(), result)
+        result
+    }
+
+    private suspend fun scoreRouteUncached(
         routeCoordinates: List<Pair<Double, Double>>,
         currentHour: Int? = null
     ): RoadRiskScoreDetails = withContext(Dispatchers.IO) {

@@ -38,13 +38,16 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowDownward
 import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.DirectionsWalk
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.FitnessCenter
 import androidx.compose.material.icons.filled.Group
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Layers
 import androidx.compose.material.icons.filled.LocationOn
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.MyLocation
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
@@ -61,11 +64,14 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TextFieldDefaults
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -130,7 +136,9 @@ fun HomeScreen(
     onUpdateUserCoordinates: (coords: Pair<Double, Double>, resolvedName: String?) -> Unit = { _, _ -> },
     onSelectRoute: (source: String, destination: String, waypoints: List<String>, sourceCoords: Pair<Double, Double>?, destCoords: Pair<Double, Double>?) -> Unit = { _, _, _, _, _ -> },
     onNavigateToAuth: () -> Unit = {},
-    onAddSavedPlace: () -> Unit,
+    onSaveSavedPlace: (title: String, iconName: String, address: String, lat: Double, lng: Double) -> Unit = { _, _, _, _, _ -> },
+    onUpdateSavedPlace: (SavedPlaceEntity) -> Unit = {},
+    onDeleteSavedPlace: (SavedPlaceEntity) -> Unit = {},
     onStartGroupTrip: () -> Unit = {}
 ) {
     var sourceQuery by remember { mutableStateOf("My Location") }
@@ -138,6 +146,11 @@ fun HomeScreen(
     var intermediateStops by remember { mutableStateOf<List<String>>(emptyList()) }
     var activeSearchFocusField by remember { mutableStateOf<String?>(null) } // "source", "dest", null
     var showGroupTripDialog by remember { mutableStateOf(false) }
+
+    // Saved-place editing: entity with id > 0 = editing existing; id == 0 = creating new
+    var addressSheetEntry by remember { mutableStateOf<SavedPlaceEntity?>(null) }
+    var pendingDeletePlace by remember { mutableStateOf<SavedPlaceEntity?>(null) }
+    var deletedPlaceForUndo by remember { mutableStateOf<SavedPlaceEntity?>(null) }
 
     // Real Location Detection and Accompanist Permission States
     val context = LocalContext.current
@@ -529,32 +542,6 @@ fun HomeScreen(
                         text = "Every route scored for physical safety",
                         fontSize = 11.5.sp,
                         color = Color(0xFF94A3B8)
-                    )
-                }
-            }
-
-            // Quick Group Trip launcher button
-            Box(
-                modifier = Modifier
-                    .clip(RoundedCornerShape(12.dp))
-                    .background(Color(0xFF18223C))
-                    .border(1.dp, Color(0x33798EF0), RoundedCornerShape(12.dp))
-                    .clickable { showGroupTripDialog = true }
-                    .padding(horizontal = 10.dp, vertical = 6.dp)
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(
-                        imageVector = Icons.Default.Group,
-                        contentDescription = "Group Trip",
-                        tint = com.example.ui.theme.SafeRouteCyan,
-                        modifier = Modifier.size(16.dp)
-                    )
-                    Spacer(modifier = Modifier.width(5.dp))
-                    Text(
-                        text = "Group",
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = Color.White
                     )
                 }
             }
@@ -1136,7 +1123,7 @@ fun HomeScreen(
                 .fillMaxWidth()
                 .padding(horizontal = 16.dp, vertical = 18.dp)
         ) {
-            // 1. SAVED PLACES (Compact Horizontal Chips)
+            // 1. SAVED PLACES (Editable / Deletable chips, Home & Work start empty)
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -1151,7 +1138,9 @@ fun HomeScreen(
                 Box(
                     modifier = Modifier
                         .size(28.dp)
-                        .bounceClick(scaleDown = 0.9f) { onAddSavedPlace() }
+                        .bounceClick(scaleDown = 0.9f) {
+                            addressSheetEntry = SavedPlaceEntity(title = "", address = "", iconName = "star", latitude = 0.0, longitude = 0.0)
+                        }
                         .clip(CircleShape)
                         .background(SafeRouteTeal.copy(alpha = 0.15f)),
                     contentAlignment = Alignment.Center
@@ -1162,46 +1151,414 @@ fun HomeScreen(
 
             Spacer(modifier = Modifier.height(10.dp))
 
+            // Undo bar for recently deleted place
+            if (deletedPlaceForUndo != null) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(Color(0xFF243247))
+                        .border(1.dp, GlassSurfaceBorder, RoundedCornerShape(10.dp))
+                        .padding(horizontal = 12.dp, vertical = 6.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "\"${deletedPlaceForUndo?.title}\" removed",
+                        fontSize = 12.sp,
+                        color = Color(0xFF94A3B8)
+                    )
+                    TextButton(onClick = {
+                        val p = deletedPlaceForUndo
+                        if (p != null) {
+                            onSaveSavedPlace(p.title, p.iconName, p.address, p.latitude, p.longitude)
+                            deletedPlaceForUndo = null
+                        }
+                    }) {
+                        Text("UNDO", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                    }
+                }
+                LaunchedEffect(deletedPlaceForUndo) {
+                    if (deletedPlaceForUndo != null) {
+                        kotlinx.coroutines.delay(5000)
+                        deletedPlaceForUndo = null
+                    }
+                }
+                Spacer(modifier = Modifier.height(8.dp))
+            }
+
+            // Home & Work placeholders when not yet set
+            val missingCorePlaces = buildList {
+                if (savedPlaces.none { it.iconName == "home" }) add("home")
+                if (savedPlaces.none { it.iconName == "work" }) add("work")
+            }
+            var openChipsMenuForId by remember { mutableStateOf<Long?>(null) }
+
             // Compact chips row
             LazyRow(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 contentPadding = PaddingValues(horizontal = 2.dp)
             ) {
-                items(savedPlaces) { place ->
+                items(missingCorePlaces.size) { idx ->
+                    val iconName = missingCorePlaces[idx]
+                    val label = iconName.replaceFirstChar { it.uppercase() }
                     Box(
                         modifier = Modifier
-                            .testTag("saved_place_card_${place.title.lowercase()}")
+                            .testTag("saved_place_placeholder_$iconName")
                             .bounceClick(scaleDown = 0.95f) {
-                                destinationQuery = place.title
-                                onSelectRoute(sourceQuery.ifBlank { "My Location" }, place.title, intermediateStops, selectedSourceCoord, Pair(place.latitude, place.longitude))
+                                addressSheetEntry = SavedPlaceEntity(title = label, address = "", iconName = iconName, latitude = 0.0, longitude = 0.0)
                             }
                             .clip(RoundedCornerShape(12.dp))
                             .background(DarkNavyCard)
-                            .border(1.dp, GlassSurfaceBorder, RoundedCornerShape(12.dp))
+                            .border(1.dp, SafetyAmber.copy(alpha = 0.45f), RoundedCornerShape(12.dp))
                             .padding(horizontal = 12.dp, vertical = 8.dp)
                     ) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Icon(
-                                imageVector = when (place.iconName) {
-                                    "home" -> Icons.Default.Home
-                                    "work" -> Icons.Default.Work
-                                    "fitness" -> Icons.Default.FitnessCenter
-                                    else -> Icons.Default.LocationOn
-                                },
-                                contentDescription = place.title,
-                                tint = SafeRouteBlue,
+                                imageVector = if (iconName == "home") Icons.Default.Home else Icons.Default.Work,
+                                contentDescription = label,
+                                tint = SafetyAmber,
                                 modifier = Modifier.size(14.dp)
                             )
                             Spacer(modifier = Modifier.width(6.dp))
+                            Column {
+                                Text(
+                                    text = label,
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = Color.White
+                                )
+                                Text(
+                                    text = "Set address",
+                                    fontSize = 9.sp,
+                                    color = SafetyAmber
+                                )
+                            }
+                        }
+                    }
+                }
+                items(savedPlaces) { place ->
+                    Box {
+                        Row(
+                            modifier = Modifier
+                                .testTag("saved_place_card_${place.title.lowercase()}")
+                                .bounceClick(scaleDown = 0.95f) {
+                                    if (place.address.isBlank()) {
+                                        addressSheetEntry = place
+                                    } else {
+                                        destinationQuery = place.title
+                                        onSelectRoute(sourceQuery.ifBlank { "My Location" }, place.title, intermediateStops, selectedSourceCoord, Pair(place.latitude, place.longitude))
+                                    }
+                                }
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(DarkNavyCard)
+                                .border(1.dp, GlassSurfaceBorder, RoundedCornerShape(12.dp))
+                                .padding(start = 12.dp, top = 8.dp, bottom = 8.dp)
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(
+                                    imageVector = when (place.iconName) {
+                                        "home" -> Icons.Default.Home
+                                        "work" -> Icons.Default.Work
+                                        "fitness" -> Icons.Default.FitnessCenter
+                                        else -> Icons.Default.LocationOn
+                                    },
+                                    contentDescription = place.title,
+                                    tint = if (place.address.isBlank()) SafetyAmber else SafeRouteBlue,
+                                    modifier = Modifier.size(14.dp)
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Column {
+                                    Text(
+                                        text = place.title,
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = Color.White
+                                    )
+                                    if (place.address.isBlank()) {
+                                        Text(text = "Set address", fontSize = 9.sp, color = SafetyAmber)
+                                    }
+                                }
+                                IconButton(
+                                    onClick = { openChipsMenuForId = place.id },
+                                    modifier = Modifier.size(22.dp)
+                                ) {
+                                    Icon(
+                                        Icons.Default.MoreVert,
+                                        contentDescription = "Place options",
+                                        tint = Color(0xFF94A3B8),
+                                        modifier = Modifier.size(14.dp)
+                                    )
+                                }
+                                DropdownMenu(
+                                    expanded = openChipsMenuForId == place.id,
+                                    onDismissRequest = { openChipsMenuForId = null }
+                                ) {
+                                    DropdownMenuItem(
+                                        text = { Text(if (place.address.isBlank()) "Set address" else "Edit") },
+                                        leadingIcon = { Icon(Icons.Default.Edit, contentDescription = null, modifier = Modifier.size(16.dp)) },
+                                        onClick = {
+                                            openChipsMenuForId = null
+                                            addressSheetEntry = place
+                                        }
+                                    )
+                                    DropdownMenuItem(
+                                        text = { Text("Delete") },
+                                        leadingIcon = { Icon(Icons.Default.Delete, contentDescription = null, tint = Color(0xFFEF4444), modifier = Modifier.size(16.dp)) },
+                                        onClick = {
+                                            openChipsMenuForId = null
+                                            pendingDeletePlace = place
+                                        }
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(24.dp))
+
+            // SET ADDRESS BOTTOM SHEET (create / edit a saved place)
+            if (addressSheetEntry != null) {
+                val sheetPlace = addressSheetEntry!!
+                var sheetTitle by remember(sheetPlace.id) { mutableStateOf(sheetPlace.title) }
+                var sheetAddress by remember(sheetPlace.id) { mutableStateOf(sheetPlace.address) }
+                var sheetLat by remember(sheetPlace.id) { mutableStateOf<Double?>(if (sheetPlace.id != 0L) sheetPlace.latitude else null) }
+                var sheetLng by remember(sheetPlace.id) { mutableStateOf<Double?>(if (sheetPlace.id != 0L) sheetPlace.longitude else null) }
+                var sheetResults by remember(sheetPlace.id) { mutableStateOf<List<com.example.saferoute.data.network.SearchResult>>(emptyList()) }
+                var sheetSearching by remember(sheetPlace.id) { mutableStateOf(false) }
+                var isLocatingForSheet by remember(sheetPlace.id) { mutableStateOf(false) }
+
+                // Debounced Geoapify address autocomplete (Coimbatore biased)
+                LaunchedEffect(sheetAddress) {
+                    val q = sheetAddress.trim()
+                    if (q.length >= 3) {
+                        kotlinx.coroutines.delay(400)
+                        sheetSearching = true
+                        sheetResults = GeoapifyService.searchPlaces(q, userCurrentCoordinates)
+                        sheetSearching = false
+                    } else {
+                        sheetResults = emptyList()
+                        sheetSearching = false
+                    }
+                }
+
+                val canSaveSheet = sheetTitle.isNotBlank() && !sheetAddress.isBlank() && sheetLat != null && sheetLng != null
+
+                ModalBottomSheet(
+                    onDismissRequest = { addressSheetEntry = null },
+                    containerColor = DarkNavyCard
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp)
+                            .verticalScroll(rememberScrollState())
+                            .padding(bottom = 24.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Text(
+                            text = if (sheetPlace.id == 0L) "Set Address" else "Edit \"${sheetTitle.ifBlank { sheetPlace.title }}\"",
+                            fontSize = 16.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color.White
+                        )
+
+                        OutlinedTextField(
+                            value = sheetTitle,
+                            onValueChange = { sheetTitle = it },
+                            placeholder = { Text("Label (e.g. Home, Gym)", fontSize = 12.sp, color = Color(0xFF64748B)) },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = TextFieldDefaults.colors(
+                                focusedContainerColor = Color.Transparent,
+                                unfocusedContainerColor = Color.Transparent,
+                                focusedTextColor = Color.White,
+                                unfocusedTextColor = Color.White,
+                                focusedIndicatorColor = SafeRouteTeal,
+                                unfocusedIndicatorColor = Color(0xFF334155)
+                            )
+                        )
+
+                        OutlinedTextField(
+                            value = sheetAddress,
+                            onValueChange = {
+                                sheetAddress = it
+                                sheetLat = null
+                                sheetLng = null
+                            },
+                            placeholder = { Text("Search address in Coimbatore", fontSize = 12.sp, color = Color(0xFF64748B)) },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = TextFieldDefaults.colors(
+                                focusedContainerColor = Color.Transparent,
+                                unfocusedContainerColor = Color.Transparent,
+                                focusedTextColor = Color.White,
+                                unfocusedTextColor = Color.White,
+                                focusedIndicatorColor = SafeRouteTeal,
+                                unfocusedIndicatorColor = Color(0xFF334155)
+                            )
+                        )
+
+                        if (sheetSearching) {
+                            CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                        }
+
+                        // Autocomplete results
+                        sheetResults.take(5).forEach { result ->
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .bounceClick(scaleDown = 0.98f) {
+                                        sheetAddress = result.displayName
+                                        sheetLat = result.latitude
+                                        sheetLng = result.longitude
+                                        if (sheetTitle.isBlank()) sheetTitle = result.shortName
+                                        sheetResults = emptyList()
+                                    }
+                                    .padding(horizontal = 4.dp, vertical = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(Icons.Default.LocationOn, contentDescription = null, tint = SafeRouteTeal, modifier = Modifier.size(14.dp))
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Column {
+                                    Text(result.shortName, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = Color.White, maxLines = 1)
+                                    Text(result.displayName, fontSize = 10.sp, color = Color(0xFF94A3B8), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                }
+                            }
+                        }
+
+                        // Use my current location / pick-on-map shortcuts
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Box(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .bounceClick(scaleDown = 0.95f) {
+                                        coroutineScope.launch {
+                                            isLocatingForSheet = true
+                                            val coords = userCurrentCoordinates ?: LocationHelper.getCurrentCoordinates(context)
+                                            isLocatingForSheet = false
+                                            if (coords != null) {
+                                                sheetLat = coords.first
+                                                sheetLng = coords.second
+                                                val resolved = GeoapifyService.reverseGeocode(coords.first, coords.second, context)
+                                                sheetAddress = resolved?.ifBlank { null }
+                                                    ?: String.format(java.util.Locale.US, "%.4f, %.4f", coords.first, coords.second)
+                                            }
+                                        }
+                                    }
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .background(SafeRouteTeal.copy(alpha = 0.12f))
+                                    .border(1.dp, SafeRouteTeal.copy(alpha = 0.35f), RoundedCornerShape(10.dp))
+                                    .padding(vertical = 10.dp, horizontal = 8.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    if (isLocatingForSheet) {
+                                        CircularProgressIndicator(modifier = Modifier.size(12.dp), strokeWidth = 1.5.dp)
+                                    } else {
+                                        Icon(Icons.Default.MyLocation, contentDescription = null, tint = SafeRouteTeal, modifier = Modifier.size(13.dp))
+                                    }
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text("Use my current location", fontSize = 10.5.sp, color = SafeRouteTeal, fontWeight = FontWeight.SemiBold, maxLines = 1)
+                                }
+                            }
+                            Box(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .bounceClick(scaleDown = 0.95f) {
+                                        coroutineScope.launch {
+                                            sheetLat = mapCenterLat
+                                            sheetLng = mapCenterLng
+                                            val resolved = GeoapifyService.reverseGeocode(mapCenterLat, mapCenterLng, context)
+                                            sheetAddress = resolved?.ifBlank { null }
+                                                ?: String.format(java.util.Locale.US, "%.4f, %.4f", mapCenterLat, mapCenterLng)
+                                        }
+                                    }
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .background(SafeRouteBlue.copy(alpha = 0.12f))
+                                    .border(1.dp, SafeRouteBlue.copy(alpha = 0.35f), RoundedCornerShape(10.dp))
+                                    .padding(vertical = 10.dp, horizontal = 8.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Icon(Icons.Default.LocationOn, contentDescription = null, tint = SafeRouteBlue, modifier = Modifier.size(13.dp))
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text("Pick map center", fontSize = 10.5.sp, color = SafeRouteBlue, fontWeight = FontWeight.SemiBold, maxLines = 1)
+                                }
+                            }
+                        }
+
+                        if (sheetLat != null && sheetLng != null) {
                             Text(
-                                text = place.title,
-                                fontSize = 12.sp,
-                                fontWeight = FontWeight.SemiBold,
-                                color = Color.White
+                                text = "Location: ${String.format(java.util.Locale.US, "%.4f, %.4f", sheetLat!!, sheetLng!!)}",
+                                fontSize = 10.sp,
+                                color = Color(0xFF64748B)
+                            )
+                        }
+
+                        Button(
+                            onClick = {
+                                if (canSaveSheet) {
+                                    if (sheetPlace.id != 0L) {
+                                        onUpdateSavedPlace(
+                                            sheetPlace.copy(
+                                                title = sheetTitle.trim(),
+                                                address = sheetAddress.trim(),
+                                                latitude = sheetLat!!,
+                                                longitude = sheetLng!!
+                                            )
+                                        )
+                                    } else {
+                                        onSaveSavedPlace(sheetTitle.trim(), sheetPlace.iconName, sheetAddress.trim(), sheetLat!!, sheetLng!!)
+                                    }
+                                    addressSheetEntry = null
+                                }
+                            },
+                            enabled = canSaveSheet,
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = SafeRouteTeal,
+                                contentColor = Color(0xFF04212B)
+                            )
+                        ) {
+                            Text(if (sheetPlace.id == 0L) "Save Place" else "Update Place", fontWeight = FontWeight.Bold)
+                        }
+
+                        if (!canSaveSheet) {
+                            Text(
+                                text = "Pick a location via search, GPS or map center to enable saving",
+                                fontSize = 10.sp,
+                                color = Color(0xFF64748B)
                             )
                         }
                     }
                 }
+            }
+
+            // DELETE SAVED PLACE CONFIRMATION
+            if (pendingDeletePlace != null) {
+                val placeToDelete = pendingDeletePlace!!
+                AlertDialog(
+                    onDismissRequest = { pendingDeletePlace = null },
+                    title = { Text("Delete \"${placeToDelete.title}\"?") },
+                    text = { Text("This saved place will be removed from your account.") },
+                    confirmButton = {
+                        TextButton(onClick = {
+                            onDeleteSavedPlace(placeToDelete)
+                            deletedPlaceForUndo = placeToDelete
+                            pendingDeletePlace = null
+                        }) {
+                            Text("Delete", color = Color(0xFFEF4444), fontWeight = FontWeight.Bold)
+                        }
+                    },
+                    dismissButton = {
+                        TextButton(onClick = { pendingDeletePlace = null }) {
+                            Text("Cancel")
+                        }
+                    }
+                )
             }
 
             Spacer(modifier = Modifier.height(24.dp))

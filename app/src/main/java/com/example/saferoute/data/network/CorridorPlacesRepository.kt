@@ -12,16 +12,28 @@ import com.example.saferoute.data.model.RoutePlace
 import com.example.saferoute.safety.SafetyWeightConfig
 import com.example.saferoute.util.OpeningHoursHelper
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withTimeoutOrNull
+import okhttp3.Call
+import okhttp3.Callback
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
+import okhttp3.Response
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.IOException
 import java.security.MessageDigest
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
+import kotlin.coroutines.resume
 import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.max
@@ -38,6 +50,13 @@ class CorridorPlacesRepository(private val context: Context) {
     companion object {
         private const val TAG = "CorridorPlacesRepo"
         private const val CACHE_VALIDITY_MS = 24 * 60 * 60 * 1000L // 24 Hours
+        private const val LONG_ROUTE_THRESHOLD_M = 25_000.0
+        private const val CHUNK_TARGET_M = 10_000.0
+        private const val MAX_CONCURRENT_CHUNKS = 3
+        private const val CHUNK_TIMEOUT_MS = 10_000L
+        private const val TOTAL_CHUNKED_TIMEOUT_MS = 15_000L
+        private const val MAX_PLACES_PER_CATEGORY = 40
+        private const val MAX_QUERY_POINTS = 60
 
         @Volatile
         private var INSTANCE: CorridorPlacesRepository? = null
@@ -53,13 +72,19 @@ class CorridorPlacesRepository(private val context: Context) {
 
     private val db = AppDatabase.getDatabase(context)
     private val client = OkHttpClient.Builder()
-        .connectTimeout(12, TimeUnit.SECONDS)
-        .readTimeout(18, TimeUnit.SECONDS)
-        .writeTimeout(12, TimeUnit.SECONDS)
+        .connectTimeout(5, TimeUnit.SECONDS)
+        .readTimeout(6, TimeUnit.SECONDS)
+        .writeTimeout(5, TimeUnit.SECONDS)
+        .callTimeout(6, TimeUnit.SECONDS) // explicit 6 s enrichment budget
         .build()
 
     /**
      * Retrieves places and infrastructure attributes along the provided route polyline.
+     *
+     * Short routes use one Overpass corridor query. Routes longer than 25 km are split into
+     * ~10 km chunks, fetched with at most 3 concurrent requests and a 10 s timeout each, with a
+     * hard 15 s budget for the whole enrichment. Whatever returns is merged; failed chunks are
+     * reported as partial data instead of leaving the UI spinning forever.
      */
     suspend fun fetchCorridorData(
         routeCoordinates: List<Pair<Double, Double>>,
@@ -68,27 +93,283 @@ class CorridorPlacesRepository(private val context: Context) {
         if (routeCoordinates.isEmpty()) return@withContext RouteCorridorData()
 
         val routeLengthMeters = computeTotalPolylineLengthM(routeCoordinates)
+        if (routeLengthMeters > LONG_ROUTE_THRESHOLD_M) {
+            fetchChunkedCorridor(routeCoordinates, routeLengthMeters, durationMinutes)
+        } else {
+            fetchSingleCorridor(routeCoordinates, routeLengthMeters, durationMinutes)
+        }
+    }
+
+    private suspend fun fetchSingleCorridor(
+        routeCoordinates: List<Pair<Double, Double>>,
+        routeLengthMeters: Double,
+        durationMinutes: Int
+    ): RouteCorridorData {
         val geometryHash = hashCoordinates(routeCoordinates)
 
         // 1. Check Room Database Cache (valid 24h)
-        try {
-            val cached = db.routeOverpassCacheDao().getCache(geometryHash)
-            if (cached != null && (System.currentTimeMillis() - cached.cachedAtEpochMs) < CACHE_VALIDITY_MS) {
-                Log.d(TAG, "Cache HIT in Room for route hash $geometryHash")
-                return@withContext parseOverpassJson(cached.rawJson, routeCoordinates, routeLengthMeters, durationMinutes)
-            }
-        } catch (e: Exception) {
-            Log.w(TAG, "Error reading Room cache: ${e.message}")
+        loadCachedJson(geometryHash)?.let { cached ->
+            Log.d(TAG, "Cache HIT in Room for route hash $geometryHash")
+            return parseOverpassJson(cached, routeCoordinates, routeLengthMeters, durationMinutes)
         }
 
-        // 2. Simplify polyline to < 100 points using Douglas-Peucker
-        val simplifiedPoints = simplifyToMaxPoints(routeCoordinates, maxPoints = 85)
+        // 2. Query Overpass (simplified polyline, capped per-category results)
+        val overpassJson = queryOverpass(routeCoordinates)
+        if (!overpassJson.isNullOrBlank()) {
+            saveCachedJson(geometryHash, overpassJson)
+            return parseOverpassJson(overpassJson, routeCoordinates, routeLengthMeters, durationMinutes)
+        }
+
+        // 3. Fallback: Query Geoapify Places API along the polyline corridor, or Coimbatore landmarks
+        Log.i(TAG, "Overpass unavailable. Falling back to Geoapify / Coimbatore landmark Places...")
+        val fallbackPlaces = fetchGeoapifyPlacesFallback(routeCoordinates).ifEmpty {
+            fetchLandmarkPlacesFallback(routeCoordinates)
+        }
+        return buildCorridorFromPlaces(
+            capPlacesByCategory(fallbackPlaces),
+            routeCoordinates,
+            routeLengthMeters,
+            durationMinutes
+        )
+    }
+
+    /**
+     * Long-route enrichment: ~10 km chunks, max 3 in flight, 10 s per chunk, 15 s overall.
+     * Successful chunks are merged; failed chunks only mark their own stretch as unavailable.
+     */
+    private suspend fun fetchChunkedCorridor(
+        routeCoordinates: List<Pair<Double, Double>>,
+        routeLengthMeters: Double,
+        durationMinutes: Int
+    ): RouteCorridorData = coroutineScope {
+        val chunks = splitRouteIntoChunks(routeCoordinates, CHUNK_TARGET_M)
+        if (chunks.isEmpty()) {
+            return@coroutineScope RouteCorridorData()
+        }
+
+        val semaphore = Semaphore(MAX_CONCURRENT_CHUNKS)
+        val completed = ConcurrentHashMap<Int, RouteCorridorData?>()
+        val startedAt = System.currentTimeMillis()
+        Log.d(
+            TAG,
+            "LONG_ROUTE_ENRICH chunks=${chunks.size} lengthKm=${"%.1f".format(routeLengthMeters / 1000)}"
+        )
+
+        // Hard overall budget. Completed chunks are kept even when the timeout cancels the rest.
+        withTimeoutOrNull(TOTAL_CHUNKED_TIMEOUT_MS) {
+            chunks.map { chunk ->
+                async(Dispatchers.IO) {
+                    semaphore.withPermit {
+                        val elapsed = System.currentTimeMillis() - startedAt
+                        if (elapsed >= TOTAL_CHUNKED_TIMEOUT_MS - 500L) {
+                            completed[chunk.index] = null
+                            return@withPermit
+                        }
+                        val result = withTimeoutOrNull(CHUNK_TIMEOUT_MS) {
+                            fetchChunkCorridor(
+                                chunk.coords,
+                                routeCoordinates,
+                                routeLengthMeters,
+                                durationMinutes
+                            )
+                        }
+                        completed[chunk.index] = result
+                        if (result == null) {
+                            Log.w(TAG, "Chunk ${chunk.index} failed or timed out")
+                        }
+                    }
+                }
+            }.awaitAll()
+        }
+
+        val failedChunks = chunks.filter { completed[it.index] == null }
+        val successful = chunks.mapNotNull { completed[it.index] }
+        val unavailableDistanceM = failedChunks.sumOf { (it.endM - it.startM).coerceAtLeast(0.0) }
+        Log.d(
+            TAG,
+            "LONG_ROUTE_ENRICH_DONE elapsedMs=${System.currentTimeMillis() - startedAt} " +
+                "ok=${successful.size}/${chunks.size} failedDistanceKm=${"%.1f".format(unavailableDistanceM / 1000)}"
+        )
+
+        val mergedPlaces = capPlacesByCategory(successful.flatMap { it.places }.distinctBy { it.id })
+        val totalWays = successful.sumOf { it.totalWaysCount }
+        val litWays = successful.sumOf { it.litWaysCount }
+        val unlitWays = successful.sumOf { it.unlitWaysCount }
+        val untaggedWays = successful.sumOf { it.untaggedWaysCount }
+
+        val merged = assembleCorridorMetrics(
+            places = mergedPlaces,
+            routeCoords = routeCoordinates,
+            routeLengthMeters = routeLengthMeters,
+            litRatio = if (totalWays > 0) litWays.toFloat() / totalWays.toFloat() else 0.0f,
+            untaggedRatio = if (totalWays > 0) untaggedWays.toFloat() / totalWays.toFloat() else 1.0f,
+            hasLightingData = totalWays > 0 && (litWays > 0 || unlitWays > 0),
+            totalWaysCount = totalWays,
+            litWaysCount = litWays,
+            unlitWaysCount = unlitWays,
+            untaggedWaysCount = untaggedWays,
+            isLitEstimated = false,
+            primaryHighwayClasses = successful.flatMap { it.primaryHighwayClasses }.distinct(),
+            sidewalkInfo = combineFact(
+                successful.map { it.sidewalkInfo },
+                "No sidewalk data tagged"
+            ),
+            maxSpeedInfo = combineFact(
+                successful.map { it.maxSpeedInfo },
+                "Speed limit not tagged"
+            ),
+            surfaces = successful.flatMap { it.surfaces }.distinct(),
+            curvySectionCount = successful.maxOfOrNull { it.curvySectionCount } ?: 0,
+            isGhatSection = successful.any { it.isGhatSection },
+            isOutsideCoimbatoreBounds = successful.any { it.isOutsideCoimbatoreBounds },
+            isLengthExceeding25Km = true,
+            hasCorridorData = successful.any { it.hasCorridorData }
+        )
+
+        val failedRanges = failedChunks.map { it.startM to it.endM }
+        merged.copy(
+            failedChunkCount = failedChunks.size,
+            totalChunkCount = chunks.size,
+            isPartialData = failedChunks.isNotEmpty(),
+            unavailableDistanceM = unavailableDistanceM,
+            coverageSegments = markUnavailableSegments(merged.coverageSegments, failedRanges)
+        )
+    }
+
+    /** Fetches one ~10 km chunk and parses it against the full route so positions stay global. */
+    private suspend fun fetchChunkCorridor(
+        chunkCoords: List<Pair<Double, Double>>,
+        fullRouteCoords: List<Pair<Double, Double>>,
+        fullRouteLengthMeters: Double,
+        durationMinutes: Int
+    ): RouteCorridorData? {
+        if (chunkCoords.size < 2) return null
+        val chunkHash = hashCoordinates(chunkCoords)
+
+        loadCachedJson(chunkHash)?.let { cached ->
+            return parseOverpassJson(cached, fullRouteCoords, fullRouteLengthMeters, durationMinutes)
+        }
+
+        val json = queryOverpass(chunkCoords)
+        if (!json.isNullOrBlank()) {
+            saveCachedJson(chunkHash, json)
+            return parseOverpassJson(json, fullRouteCoords, fullRouteLengthMeters, durationMinutes)
+        }
+
+        // Cheap landmark fallback (no extra per-chunk network fan-out). Empty => chunk failed.
+        val landmarks = fetchLandmarkPlacesFallback(chunkCoords)
+            .map { place ->
+                val (dist, pos) = calculateDistancesToPolyline(
+                    Pair(place.lat, place.lng),
+                    fullRouteCoords
+                )
+                place.copy(distanceFromRouteM = dist, positionAlongRouteM = pos)
+            }
+        if (landmarks.isEmpty()) return null
+        return buildCorridorFromPlaces(
+            capPlacesByCategory(landmarks),
+            fullRouteCoords,
+            fullRouteLengthMeters,
+            durationMinutes
+        )
+    }
+
+    internal data class CorridorChunk(
+        val index: Int,
+        val startM: Double,
+        val endM: Double,
+        val coords: List<Pair<Double, Double>>
+    )
+
+    internal fun splitRouteIntoChunks(
+        coords: List<Pair<Double, Double>>,
+        targetMeters: Double
+    ): List<CorridorChunk> {
+        if (coords.size < 2) return emptyList()
+        val chunks = mutableListOf<CorridorChunk>()
+        var startIndex = 0
+        var accumulatedM = 0.0
+        var chunkIndex = 0
+
+        for (i in 0 until coords.size - 1) {
+            accumulatedM += haversineDistanceM(coords[i], coords[i + 1])
+            val isLastSegment = i == coords.size - 2
+            if (accumulatedM >= targetMeters || isLastSegment) {
+                val endIndex = i + 1
+                val startM = distanceAlongPolylineM(coords, startIndex)
+                chunks.add(
+                    CorridorChunk(
+                        index = chunkIndex,
+                        startM = startM,
+                        endM = startM + accumulatedM,
+                        coords = coords.subList(startIndex, endIndex + 1).toList()
+                    )
+                )
+                chunkIndex += 1
+                startIndex = endIndex
+                accumulatedM = 0.0
+            }
+        }
+        return chunks
+    }
+
+    private fun distanceAlongPolylineM(
+        coords: List<Pair<Double, Double>>,
+        endIndex: Int
+    ): Double {
+        if (endIndex <= 0) return 0.0
+        var sum = 0.0
+        val safeEnd = endIndex.coerceAtMost(coords.size - 1)
+        for (i in 0 until safeEnd) {
+            sum += haversineDistanceM(coords[i], coords[i + 1])
+        }
+        return sum
+    }
+
+    private fun capPlacesByCategory(
+        places: List<RoutePlace>,
+        perCategory: Int = MAX_PLACES_PER_CATEGORY
+    ): List<RoutePlace> {
+        if (places.isEmpty()) return places
+        return places
+            .groupBy { it.category }
+            .flatMap { (_, categoryPlaces) ->
+                categoryPlaces.sortedBy { it.positionAlongRouteM }.take(perCategory)
+            }
+            .sortedBy { it.positionAlongRouteM }
+    }
+
+    private fun markUnavailableSegments(
+        segments: List<CoverageSegment>,
+        failedRanges: List<Pair<Double, Double>>
+    ): List<CoverageSegment> {
+        if (segments.isEmpty() || failedRanges.isEmpty()) return segments
+        return segments.map { segment ->
+            val midpoint = (segment.startMeters + segment.endMeters) / 2.0
+            val overlapsFailure = failedRanges.any { (start, end) -> midpoint in start..end }
+            if (overlapsFailure) {
+                segment.copy(
+                    status = CoverageStatus.UNAVAILABLE,
+                    openPlacesCount = 0,
+                    hasHelpPoint = false
+                )
+            } else {
+                segment
+            }
+        }
+    }
+
+    private fun combineFact(values: List<String>, fallback: String): String {
+        val meaningful = values.filter { it.isNotBlank() && !it.contains("No ", true) && !it.contains("not tagged", true) }
+        return meaningful.distinct().take(2).joinToString(" • ").ifBlank { fallback }
+    }
+
+    private suspend fun queryOverpass(routeCoordinates: List<Pair<Double, Double>>): String? {
+        val simplifiedPoints = simplifyToMaxPoints(routeCoordinates, maxPoints = MAX_QUERY_POINTS)
         val polylineAroundParam = simplifiedPoints.joinToString(",") { "${it.first},${it.second}" }
 
-        // 3. Try Overpass API with around filter
-        var overpassJson: String? = null
         val overpassQuery = """
-            [out:json][timeout:15];
+            [out:json][timeout:8];
             (
               node(around:150.0,$polylineAroundParam)[shop];
               node(around:150.0,$polylineAroundParam)[amenity~'^(pharmacy|hospital|clinic|doctors|police|fire_station|restaurant|cafe|fast_food|fuel|atm|bank)$'];
@@ -116,43 +397,75 @@ class CorridorPlacesRepository(private val context: Context) {
                     .header("Accept", "application/json")
                     .build()
 
-                val response = client.newCall(request).execute()
-                if (response.isSuccessful) {
-                    val body = response.body?.string()
-                    if (!body.isNullOrBlank() && body.contains("\"elements\"")) {
-                        overpassJson = body
-                        Log.d(TAG, "Successfully fetched from Overpass mirror: $endpoint")
-                        break
+                val response = executeRequest(request)
+                if (response != null) {
+                    response.use { resp ->
+                        if (resp.isSuccessful) {
+                            val body = resp.body?.string()
+                            if (!body.isNullOrBlank() && body.contains("\"elements\"")) {
+                                Log.d(TAG, "Successfully fetched from Overpass mirror: $endpoint")
+                                return body
+                            }
+                        }
                     }
                 }
             } catch (e: Exception) {
                 Log.w(TAG, "Overpass mirror $endpoint failed: ${e.message}")
             }
         }
-
-        // 4. Save to Room Cache if Overpass succeeded
-        if (!overpassJson.isNullOrBlank()) {
-            try {
-                db.routeOverpassCacheDao().insertCache(
-                    RouteOverpassCacheEntity(
-                        routeGeometryHash = geometryHash,
-                        rawJson = overpassJson,
-                        cachedAtEpochMs = System.currentTimeMillis()
-                    )
-                )
-            } catch (e: Exception) {
-                Log.w(TAG, "Error caching to Room: ${e.message}")
-            }
-            return@withContext parseOverpassJson(overpassJson, routeCoordinates, routeLengthMeters, durationMinutes)
-        }
-
-        // 5. Fallback: Query Geoapify Places API along the polyline corridor, or Coimbatore landmarks
-        Log.i(TAG, "Overpass unavailable. Falling back to Geoapify / Coimbatore landmark Places...")
-        val fallbackPlaces = fetchGeoapifyPlacesFallback(routeCoordinates).ifEmpty {
-            fetchLandmarkPlacesFallback(routeCoordinates)
-        }
-        return@withContext buildCorridorFromPlaces(fallbackPlaces, routeCoordinates, routeLengthMeters, durationMinutes)
+        return null
     }
+
+    private suspend fun loadCachedJson(geometryHash: String): String? {
+        try {
+            val cached = db.routeOverpassCacheDao().getCache(geometryHash)
+            if (cached != null &&
+                (System.currentTimeMillis() - cached.cachedAtEpochMs) < CACHE_VALIDITY_MS
+            ) {
+                return cached.rawJson
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Error reading Room cache: ${e.message}")
+        }
+        return null
+    }
+
+    private suspend fun saveCachedJson(geometryHash: String, json: String) {
+        try {
+            db.routeOverpassCacheDao().insertCache(
+                RouteOverpassCacheEntity(
+                    routeGeometryHash = geometryHash,
+                    rawJson = json,
+                    cachedAtEpochMs = System.currentTimeMillis()
+                )
+            )
+        } catch (e: Exception) {
+            Log.w(TAG, "Error caching to Room: ${e.message}")
+        }
+    }
+
+    /**
+     * OkHttp async bridge so coroutine timeouts (chunk 10 s / total 15 s) actually cancel the
+     * HTTP call instead of waiting for a blocking execute() to finish.
+     */
+    private suspend fun executeRequest(request: Request): Response? =
+        suspendCancellableCoroutine { continuation ->
+            val call = client.newCall(request)
+            continuation.invokeOnCancellation { call.cancel() }
+            call.enqueue(object : Callback {
+                override fun onFailure(call: Call, e: IOException) {
+                    if (continuation.isActive) continuation.resume(null)
+                }
+
+                override fun onResponse(call: Call, response: Response) {
+                    if (continuation.isActive) {
+                        continuation.resume(response)
+                    } else {
+                        response.close()
+                    }
+                }
+            })
+        }
 
     private fun fetchLandmarkPlacesFallback(
         routeCoords: List<Pair<Double, Double>>
@@ -303,7 +616,7 @@ class CorridorPlacesRepository(private val context: Context) {
         val isLongerThan25Km = routeLengthMeters > 25000.0
 
         return assembleCorridorMetrics(
-            places = rawPlaces,
+            places = capPlacesByCategory(rawPlaces),
             routeCoords = routeCoords,
             routeLengthMeters = routeLengthMeters,
             litRatio = litRatio,
@@ -388,9 +701,10 @@ class CorridorPlacesRepository(private val context: Context) {
                 .post(bodyJson.toString().toRequestBody("application/json".toMediaType()))
                 .build()
 
-            val response = client.newCall(request).execute()
-            if (response.isSuccessful) {
-                val str = response.body?.string().orEmpty()
+            val response = executeRequest(request) ?: return emptyList()
+            response.use { resp ->
+                if (resp.isSuccessful) {
+                val str = resp.body?.string().orEmpty()
                 val root = JSONObject(str)
                 val features = root.optJSONArray("features") ?: JSONArray()
                 val result = mutableListOf<RoutePlace>()
@@ -427,6 +741,7 @@ class CorridorPlacesRepository(private val context: Context) {
                     )
                 }
                 return result
+                }
             }
         } catch (e: Exception) {
             Log.w(TAG, "Geoapify fallback error: ${e.message}")
@@ -447,7 +762,7 @@ class CorridorPlacesRepository(private val context: Context) {
         val isLongerThan25Km = routeLengthMeters > 25000.0
 
         return assembleCorridorMetrics(
-            places = places,
+            places = capPlacesByCategory(places),
             routeCoords = routeCoords,
             routeLengthMeters = routeLengthMeters,
             litRatio = 0.0f,

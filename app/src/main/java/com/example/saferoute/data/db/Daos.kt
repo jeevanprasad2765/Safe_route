@@ -87,4 +87,19 @@ interface UserProfileDao {
 
     @Query("UPDATE user_profile SET safetyPreference = :pref WHERE id = 1")
     suspend fun setSafetyPreference(pref: String)
+
+    @Query("UPDATE user_profile SET alsoCall112 = :enabled WHERE id = 1")
+    suspend fun setAlsoCall112(enabled: Boolean)
+}
+
+@Dao
+interface UserOnboardingDao {
+    @Query("SELECT completedOnboarding FROM user_onboarding WHERE userId = :userId LIMIT 1")
+    suspend fun getOnboardingCompleted(userId: String): Boolean?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsert(status: UserOnboardingEntity)
+
+    @Query("DELETE FROM user_onboarding WHERE userId = :userId")
+    suspend fun clear(userId: String)
 }

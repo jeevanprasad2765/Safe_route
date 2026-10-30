@@ -68,6 +68,7 @@ import com.example.ui.theme.GlassSurfaceBorder
 import com.example.ui.theme.SafeRouteBlue
 import com.example.ui.theme.SafeRouteTeal
 import com.example.ui.theme.SafetyGreen
+import com.example.ui.theme.SafetyRed
 import com.example.ui.theme.bounceClick
 
 @OptIn(ExperimentalPermissionsApi::class)
@@ -76,11 +77,12 @@ fun OnboardingScreen(
     onFinishOnboarding: (contactName: String, contactPhone: String, contactRel: String) -> Unit
 ) {
     var currentStep by remember { mutableIntStateOf(0) }
-    var selectedLang by remember { mutableStateOf(AppLanguage.ENGLISH) }
+    var selectedLang by remember { mutableStateOf(AppLanguage.ENGLISH) } // Kept for future multi-language support
 
-    var contactName by remember { mutableStateOf("Sarah Taylor") }
-    var contactPhone by remember { mutableStateOf("+1 (555) 019-2834") }
-    var contactRelationship by remember { mutableStateOf("Sister") }
+    var contactName by remember { mutableStateOf("") }
+    var contactPhone by remember { mutableStateOf("") }
+    var contactRelationship by remember { mutableStateOf("") }
+    var contactError by remember { mutableStateOf<String?>(null) }
 
     val locationPermissionsState = rememberMultiplePermissionsState(
         permissions = listOf(
@@ -120,41 +122,6 @@ fun OnboardingScreen(
                                 .clip(CircleShape)
                                 .background(if (index == currentStep) SafeRouteTeal else Color(0x33FFFFFF))
                         )
-                    }
-                }
-
-                // Language Toggle Pill (English / தமிழ்)
-                Box(
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(14.dp))
-                        .background(DarkNavyCard)
-                        .border(1.dp, GlassSurfaceBorder, RoundedCornerShape(14.dp))
-                        .padding(horizontal = 6.dp, vertical = 3.dp)
-                ) {
-                    Row(
-                        horizontalArrangement = Arrangement.spacedBy(4.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        for (lang in AppLanguage.values()) {
-                            val isSel = selectedLang == lang
-                            Box(
-                                modifier = Modifier
-                                    .bounceClick(scaleDown = 0.92f) {
-                                        selectedLang = lang
-                                        LanguageManager.setLanguage(lang)
-                                    }
-                                    .clip(RoundedCornerShape(10.dp))
-                                    .background(if (isSel) SafeRouteTeal.copy(alpha = 0.25f) else Color.Transparent)
-                                    .padding(horizontal = 6.dp, vertical = 3.dp)
-                            ) {
-                                Text(
-                                    text = lang.nativeName,
-                                    fontSize = 11.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color = if (isSel) SafeRouteTeal else Color(0xFF94A3B8)
-                                )
-                            }
-                        }
                     }
                 }
 
@@ -211,6 +178,18 @@ fun OnboardingScreen(
 
             Spacer(modifier = Modifier.height(24.dp))
 
+            contactError?.let { error ->
+                Text(
+                    text = error,
+                    color = SafetyRed,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = 8.dp)
+                )
+            }
+
             // Bottom Navigation Button
             Box(
                 modifier = Modifier
@@ -221,7 +200,24 @@ fun OnboardingScreen(
                         if (currentStep < 4) {
                             currentStep += 1
                         } else {
-                            onFinishOnboarding(contactName, contactPhone, contactRelationship)
+                            val normalisedPhone = com.example.saferoute.util.SosManager
+                                .normalizePhoneNumber(contactPhone)
+                            when {
+                                contactName.isBlank() -> {
+                                    contactError = "Enter the name of your emergency contact."
+                                }
+                                normalisedPhone == null -> {
+                                    contactError = "Enter a valid phone number (10-digit Indian number or with country code)."
+                                }
+                                else -> {
+                                    contactError = null
+                                    onFinishOnboarding(
+                                        contactName.trim(),
+                                        normalisedPhone,
+                                        contactRelationship.ifBlank { "Contact" }
+                                    )
+                                }
+                            }
                         }
                     }
                     .clip(RoundedCornerShape(16.dp))

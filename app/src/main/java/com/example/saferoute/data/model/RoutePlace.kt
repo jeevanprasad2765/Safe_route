@@ -41,7 +41,8 @@ data class RoutePlace(
 enum class CoverageStatus {
     HIGH,    // Well-covered with active businesses and nearby help
     MEDIUM,  // Moderate activity
-    LOW      // Isolated / dark stretch requiring caution
+    LOW,     // Isolated / dark stretch requiring caution
+    UNAVAILABLE // Enrichment failed for this stretch (partial long-route data)
 }
 
 data class CoverageSegment(
@@ -81,5 +82,10 @@ data class RouteCorridorData(
     val isGhatSection: Boolean = false,
     val isOutsideCoimbatoreBounds: Boolean = false,
     val isLengthExceeding25Km: Boolean = false,
-    val hasCorridorData: Boolean = false
+    val hasCorridorData: Boolean = false,
+    // Chunked long-route enrichment metadata (routes > 25 km)
+    val failedChunkCount: Int = 0,
+    val totalChunkCount: Int = 0,
+    val isPartialData: Boolean = false,
+    val unavailableDistanceM: Double = 0.0
 )

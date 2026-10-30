@@ -299,25 +299,25 @@ fun SafetyDetailsDrawer(
                 Spacer(modifier = Modifier.height(18.dp))
             }
 
-            // ROAD-ACCIDENT RISK SECTION
-            Text(
-                text = "Road-Accident Risk",
-                fontSize = 15.sp,
-                fontWeight = FontWeight.Bold,
-                color = Color.White
-            )
-            Spacer(modifier = Modifier.height(8.dp))
-
+            // ROAD-ACCIDENT RISK SECTION (hidden entirely when no accident data)
             val roadRisk = route.roadRiskDetails
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(16.dp))
-                    .background(DarkNavyCard)
-                    .border(1.dp, GlassSurfaceBorder, RoundedCornerShape(16.dp))
-                    .padding(14.dp)
-            ) {
-                if (roadRisk != null && roadRisk.isAvailable) {
+            if (roadRisk != null && roadRisk.isAvailable) {
+                Text(
+                    text = "Road-Accident Risk",
+                    fontSize = 15.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = Color.White
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(16.dp))
+                        .background(DarkNavyCard)
+                        .border(1.dp, GlassSurfaceBorder, RoundedCornerShape(16.dp))
+                        .padding(14.dp)
+                ) {
                     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Row(
                             modifier = Modifier.fillMaxWidth(),
@@ -370,25 +370,10 @@ fun SafetyDetailsDrawer(
                             )
                         }
                     }
-                } else {
-                    Column {
-                        Text(
-                            text = "Predicted risk unavailable - not enough accident data",
-                            fontSize = 13.sp,
-                            fontWeight = FontWeight.SemiBold,
-                            color = Color(0xFF94A3B8)
-                        )
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Text(
-                            text = "Requires at least 100 verified accident black-spot records to train the road-accident risk model.",
-                            fontSize = 11.sp,
-                            color = Color(0xFF64748B)
-                        )
-                    }
                 }
-            }
 
-            Spacer(modifier = Modifier.height(18.dp))
+                Spacer(modifier = Modifier.height(18.dp))
+            }
 
             // PERSONAL SAFETY (NIGHT) SECTION
             Text(
@@ -415,16 +400,16 @@ fun SafetyDetailsDrawer(
                         iconTint = Color(0xFFFFD166),
                         title = "Street Lighting Coverage",
                         score = route.safetyDetails.lightingFactor?.toInt(),
-                        explanation = route.safetyDetails.lightingFactText.ifBlank { "Lighting data unavailable for most of this route" }
+                        explanation = route.safetyDetails.lightingFactText
                     )
 
-                    // Factor 2: Road Characteristics & Geometry
+                    // Factor 2: Road Characteristics & Geometry (hidden when score is null — FactorProgressItem skips it)
                     FactorProgressItem(
                         icon = Icons.Default.Navigation,
                         iconTint = SafeRouteTeal,
                         title = "Road Type & Geometry",
                         score = null,
-                        explanation = route.safetyDetails.roadTypeFactText.ifBlank { "Road geometry: Standard mapped segments" }
+                        explanation = ""
                     )
 
                     // Factor 3: Pedestrian Activity & Open Shops
@@ -433,7 +418,7 @@ fun SafetyDetailsDrawer(
                         iconTint = Color(0xFF38BDF8),
                         title = "Nearby Activity & Open Shops (150m)",
                         score = route.safetyDetails.crowdDensityFactor?.toInt(),
-                        explanation = route.safetyDetails.activityFactText.ifBlank { "No nearby activity data available" }
+                        explanation = route.safetyDetails.activityFactText
                     )
 
                     // Factor 4: Black-Spots & Incidents
@@ -442,7 +427,7 @@ fun SafetyDetailsDrawer(
                         iconTint = SafetyGreen,
                         title = "Accident Black-Spots & Hazards",
                         score = route.safetyDetails.incidentHistoryFactor?.toInt(),
-                        explanation = route.safetyDetails.incidentFactText.ifBlank { "No incident data for this area" }
+                        explanation = route.safetyDetails.incidentFactText
                     )
 
                     // Factor 5: Emergency Help Coverage
@@ -467,28 +452,30 @@ fun SafetyDetailsDrawer(
 
             Spacer(modifier = Modifier.height(20.dp))
 
-            // ── 200m SHOP & HELP COVERAGE STRIP ──
-            Text(
-                text = LanguageManager.get("corridor_shop_coverage", currentLang),
-                fontSize = 15.sp,
-                fontWeight = FontWeight.Bold,
-                color = Color.White
-            )
-            Spacer(modifier = Modifier.height(4.dp))
+            // ── 200m SHOP & HELP COVERAGE STRIP (hidden when no corridor coverage data) ──
+            if (route.corridorData.coverageSegments.isNotEmpty()) {
+                Text(
+                    text = LanguageManager.get("corridor_shop_coverage", currentLang),
+                    fontSize = 15.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = Color.White
+                )
+                Spacer(modifier = Modifier.height(4.dp))
 
-            val longestStretch = (route.safetyDetails.longestStretchWithoutHelpMeters.takeIf { it > 0 }
-                ?: route.corridorData.longestStretchWithoutHelpM).toInt()
-            Text(
-                text = "${LanguageManager.get("longest_stretch_without_help", currentLang)}: ${longestStretch} m",
-                fontSize = 12.sp,
-                color = if (longestStretch > 600) SafetyRed else Color(0xFF94A3B8),
-                fontWeight = FontWeight.Medium
-            )
+                val longestStretch = (route.safetyDetails.longestStretchWithoutHelpMeters.takeIf { it > 0 }
+                    ?: route.corridorData.longestStretchWithoutHelpM).toInt()
+                if (longestStretch > 0) {
+                    Text(
+                        text = "${LanguageManager.get("longest_stretch_without_help", currentLang)}: ${longestStretch} m",
+                        fontSize = 12.sp,
+                        color = if (longestStretch > 600) SafetyRed else Color(0xFF94A3B8),
+                        fontWeight = FontWeight.Medium
+                    )
+                }
 
-            Spacer(modifier = Modifier.height(10.dp))
+                Spacer(modifier = Modifier.height(10.dp))
 
-            val segments = route.corridorData.coverageSegments
-            if (segments.isNotEmpty()) {
+                val segments = route.corridorData.coverageSegments
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -502,6 +489,7 @@ fun SafetyDetailsDrawer(
                             CoverageStatus.HIGH -> SafetyGreen
                             CoverageStatus.MEDIUM -> SafetyAmber
                             CoverageStatus.LOW -> SafetyRed
+                            CoverageStatus.UNAVAILABLE -> Color(0xFF64748B)
                         }
                         Box(
                             modifier = Modifier
@@ -537,79 +525,63 @@ fun SafetyDetailsDrawer(
                     }
                     Text("${route.distanceKm} km", fontSize = 10.sp, color = Color.Gray)
                 }
+
+                Spacer(modifier = Modifier.height(20.dp))
             }
 
-            Spacer(modifier = Modifier.height(20.dp))
+            // ── TABBED PLACES BROWSER (hidden entirely when no places; empty categories hidden) ──
+            if (route.places.isNotEmpty()) {
+                val availableTabs = buildList {
+                    add(Pair(LanguageManager.get("all_places", currentLang), route.places))
+                    val helpPlaces = route.places.filter { it.category.isHelpPoint }
+                    val medicalPlaces = route.places.filter { it.category == PlaceCategory.HOSPITAL || it.category == PlaceCategory.PHARMACY }
+                    val fuelPlaces = route.places.filter { it.category == PlaceCategory.FUEL }
+                    val foodPlaces = route.places.filter { it.category == PlaceCategory.FOOD }
+                    val shopPlaces = route.places.filter { it.category == PlaceCategory.SHOP }
+                    if (helpPlaces.isNotEmpty()) add(Pair(LanguageManager.get("help_points", currentLang), helpPlaces))
+                    if (medicalPlaces.isNotEmpty()) add(Pair(LanguageManager.get("medical", currentLang), medicalPlaces))
+                    if (fuelPlaces.isNotEmpty()) add(Pair(LanguageManager.get("petrol_pumps", currentLang), fuelPlaces))
+                    if (foodPlaces.isNotEmpty()) add(Pair(LanguageManager.get("food", currentLang), foodPlaces))
+                    if (shopPlaces.isNotEmpty()) add(Pair(LanguageManager.get("shops", currentLang), shopPlaces))
+                }
+                // keep selection valid when the available tabs shrink after a route refresh
+                val selectedTabIdx = selectedPlaceTab.coerceAtMost(availableTabs.size - 1)
+                val filteredPlaces = availableTabs[selectedTabIdx].second
 
-            // ── TABBED PLACES BROWSER (All, Help points, Medical, Fuel, Food, Shops) ──
-            val tabTitles = listOf(
-                LanguageManager.get("all_places", currentLang),
-                LanguageManager.get("help_points", currentLang),
-                LanguageManager.get("medical", currentLang),
-                LanguageManager.get("petrol_pumps", currentLang),
-                LanguageManager.get("food", currentLang),
-                LanguageManager.get("shops", currentLang)
-            )
-
-            ScrollableTabRow(
-                selectedTabIndex = selectedPlaceTab,
-                containerColor = Color.Transparent,
-                contentColor = SafeRouteTeal,
-                edgePadding = 0.dp,
-                indicator = { tabPositions ->
-                    if (selectedPlaceTab < tabPositions.size) {
-                        TabRowDefaults.SecondaryIndicator(
-                            modifier = Modifier.tabIndicatorOffset(tabPositions[selectedPlaceTab]),
-                            color = SafeRouteTeal,
-                            height = 3.dp
-                        )
-                    }
-                },
-                divider = {}
-            ) {
-                tabTitles.forEachIndexed { index, title ->
-                    Tab(
-                        selected = selectedPlaceTab == index,
-                        onClick = { selectedPlaceTab = index },
-                        text = {
-                            Text(
-                                text = title,
-                                fontSize = 12.sp,
-                                fontWeight = if (selectedPlaceTab == index) FontWeight.Bold else FontWeight.Normal,
-                                color = if (selectedPlaceTab == index) SafeRouteTeal else Color(0xFF94A3B8)
+                ScrollableTabRow(
+                    selectedTabIndex = selectedTabIdx,
+                    containerColor = Color.Transparent,
+                    contentColor = SafeRouteTeal,
+                    edgePadding = 0.dp,
+                    indicator = { tabPositions ->
+                        if (selectedTabIdx < tabPositions.size) {
+                            TabRowDefaults.SecondaryIndicator(
+                                modifier = Modifier.tabIndicatorOffset(tabPositions[selectedTabIdx]),
+                                color = SafeRouteTeal,
+                                height = 3.dp
                             )
                         }
-                    )
-                }
-            }
-
-            Spacer(modifier = Modifier.height(12.dp))
-
-            val filteredPlaces = remember(selectedPlaceTab, route.places) {
-                when (selectedPlaceTab) {
-                    1 -> route.places.filter { it.category.isHelpPoint }
-                    2 -> route.places.filter { it.category == PlaceCategory.HOSPITAL || it.category == PlaceCategory.PHARMACY }
-                    3 -> route.places.filter { it.category == PlaceCategory.FUEL }
-                    4 -> route.places.filter { it.category == PlaceCategory.FOOD }
-                    5 -> route.places.filter { it.category == PlaceCategory.SHOP }
-                    else -> route.places
-                }
-            }
-
-            if (filteredPlaces.isEmpty()) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(vertical = 16.dp),
-                    contentAlignment = Alignment.Center
+                    },
+                    divider = {}
                 ) {
-                    Text(
-                        text = "No places in this category along this corridor",
-                        fontSize = 12.sp,
-                        color = Color(0xFF94A3B8)
-                    )
+                    availableTabs.forEachIndexed { index, tabDef ->
+                        Tab(
+                            selected = selectedTabIdx == index,
+                            onClick = { selectedPlaceTab = index },
+                            text = {
+                                Text(
+                                    text = tabDef.first,
+                                    fontSize = 12.sp,
+                                    fontWeight = if (selectedTabIdx == index) FontWeight.Bold else FontWeight.Normal,
+                                    color = if (selectedTabIdx == index) SafeRouteTeal else Color(0xFF94A3B8)
+                                )
+                            }
+                        )
+                    }
                 }
-            } else {
+
+                Spacer(modifier = Modifier.height(12.dp))
+
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     filteredPlaces.take(40).forEach { place ->
                         RoutePlaceItem(
@@ -671,17 +643,19 @@ fun FactorProgressItem(
     score: Int?,
     explanation: String
 ) {
-    val hasData = score != null
+    // Hide factors with no data entirely instead of showing "No data available"
+    if (score == null) return
+
+    val hasData = true
 
     val progressColor = when {
-        !hasData -> Color(0xFF64748B) // Grey
         score >= 80 -> SafetyGreen
         score >= 60 -> SafetyAmber
         else -> SafetyRed
     }
 
     val animatedProgress by animateFloatAsState(
-        targetValue = if (hasData) (score!! / 100f) else 0f,
+        targetValue = (score / 100f),
         animationSpec = tween(600),
         label = "FactorProgress"
     )
@@ -696,7 +670,7 @@ fun FactorProgressItem(
                 Icon(
                     imageVector = icon,
                     contentDescription = null,
-                    tint = if (hasData) iconTint else Color(0xFF64748B),
+                    tint = iconTint,
                     modifier = Modifier.size(16.dp)
                 )
                 Spacer(modifier = Modifier.width(8.dp))
@@ -704,52 +678,43 @@ fun FactorProgressItem(
                     text = title,
                     fontSize = 13.sp,
                     fontWeight = FontWeight.SemiBold,
-                    color = if (hasData) Color.White else Color(0xFF94A3B8)
+                    color = Color.White
                 )
             }
             Text(
-                text = if (hasData) "$score%" else "No data available",
+                text = "$score%",
                 fontSize = 12.sp,
-                fontWeight = if (hasData) FontWeight.Bold else FontWeight.Normal,
+                fontWeight = FontWeight.Bold,
                 color = progressColor
             )
         }
 
         Spacer(modifier = Modifier.height(6.dp))
 
-        if (hasData) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(6.dp)
+                .clip(RoundedCornerShape(3.dp))
+                .background(Color(0x22FFFFFF))
+        ) {
             Box(
                 modifier = Modifier
-                    .fillMaxWidth()
+                    .fillMaxWidth(animatedProgress)
                     .height(6.dp)
                     .clip(RoundedCornerShape(3.dp))
-                    .background(Color(0x22FFFFFF))
-            ) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth(animatedProgress)
-                        .height(6.dp)
-                        .clip(RoundedCornerShape(3.dp))
-                        .background(progressColor)
-                )
-            }
-        } else {
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(4.dp)
-                    .clip(RoundedCornerShape(2.dp))
-                    .background(Color(0xFF334155))
+                    .background(progressColor)
             )
         }
 
-        Spacer(modifier = Modifier.height(4.dp))
-
-        Text(
-            text = explanation,
-            fontSize = 11.sp,
-            color = if (hasData) Color(0xFF94A3B8) else Color(0xFF64748B)
-        )
+        if (explanation.isNotBlank()) {
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(
+                text = explanation,
+                fontSize = 11.sp,
+                color = Color(0xFF94A3B8)
+            )
+        }
     }
 }
 
@@ -785,7 +750,7 @@ fun RoutePlaceItem(
         place.is24x7 -> "Open 24/7"
         place.isOpenNow && !place.closesAt.isNullOrBlank() -> "Closes ${place.closesAt}"
         !place.isOpenNow && !place.opensAt.isNullOrBlank() -> "Opens ${place.opensAt}"
-        else -> LanguageManager.get("hours_not_listed", currentLang)
+        else -> "" // hide "hours not listed" — no data means no text
     }
 
     Box(
@@ -850,11 +815,13 @@ fun RoutePlaceItem(
                         )
                     }
 
-                    Text(
-                        text = hoursStatusText,
-                        fontSize = 11.sp,
-                        color = if (place.isOpenNow) Color(0xFFCBD5E1) else Color(0xFF94A3B8)
-                    )
+                    if (hoursStatusText.isNotBlank()) {
+                        Text(
+                            text = hoursStatusText,
+                            fontSize = 11.sp,
+                            color = if (place.isOpenNow) Color(0xFFCBD5E1) else Color(0xFF94A3B8)
+                        )
+                    }
 
                     if (!place.isOpenWhenPassing && place.isOpenNow) {
                         Text(

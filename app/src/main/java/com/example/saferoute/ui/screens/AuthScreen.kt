@@ -43,14 +43,12 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
@@ -61,8 +59,7 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.R
-import com.example.saferoute.data.firebase.AuthResult
-import com.example.saferoute.data.firebase.FirebaseAuthManager
+import com.example.saferoute.ui.viewmodel.AuthUiState
 import com.example.saferoute.util.LanguageManager
 import com.example.ui.theme.DarkNavyBackground
 import com.example.ui.theme.DarkNavyCard
@@ -73,29 +70,30 @@ import com.example.ui.theme.SafeRouteTeal
 import com.example.ui.theme.SafetyGreen
 import com.example.ui.theme.SafetyRed
 import com.example.ui.theme.bounceClick
-import kotlinx.coroutines.launch
 
 @Composable
 fun AuthScreen(
-    onLoginSuccess: (userId: String, email: String, name: String) -> Unit
+    authState: AuthUiState = AuthUiState.Idle,
+    resetPasswordMessage: String? = null,
+    resetPasswordLoading: Boolean = false,
+    onGoogleSignIn: () -> Unit = {},
+    onEmailAuth: (isSignUp: Boolean, name: String, email: String, password: String) -> Unit = { _, _, _, _ -> },
+    onResetPassword: (String) -> Unit = {},
+    onClearResetMessage: () -> Unit = {}
 ) {
     var isSignUp by remember { mutableStateOf(false) }
-    var email by remember { mutableStateOf("alex.taylor@saferoute.io") }
-    var password by remember { mutableStateOf("SafePass2026!") }
-    var confirmPassword by remember { mutableStateOf("SafePass2026!") }
-    var name by remember { mutableStateOf("Alex Taylor") }
+    var email by remember { mutableStateOf("") }
+    var password by remember { mutableStateOf("") }
+    var confirmPassword by remember { mutableStateOf("") }
+    var name by remember { mutableStateOf("") }
     var passwordVisible by remember { mutableStateOf(false) }
     var confirmPasswordVisible by remember { mutableStateOf(false) }
-    var isLoading by remember { mutableStateOf(false) }
-
-    var errorMessage by remember { mutableStateOf<String?>(null) }
-    var successMessage by remember { mutableStateOf<String?>(null) }
+    var validationError by remember { mutableStateOf<String?>(null) }
     var showForgotPasswordDialog by remember { mutableStateOf(false) }
     var forgotPasswordEmail by remember { mutableStateOf("") }
-    var forgotPasswordMessage by remember { mutableStateOf<String?>(null) }
 
-    val coroutineScope = rememberCoroutineScope()
-    val context = LocalContext.current
+    val isLoading = authState is AuthUiState.Loading
+    val errorMessage = validationError ?: (authState as? AuthUiState.Error)?.message
 
     // Password strength evaluation (0 to 1)
     val passwordStrength = remember(password) {
@@ -311,7 +309,7 @@ fun AuthScreen(
                         ) {
                             TextButton(onClick = {
                                 forgotPasswordEmail = email
-                                forgotPasswordMessage = null
+                                onClearResetMessage()
                                 showForgotPasswordDialog = true
                             }) {
                                 Text(
@@ -334,17 +332,6 @@ fun AuthScreen(
                         )
                     }
 
-                    // Success Message Display
-                    successMessage?.let { succ ->
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Text(
-                            text = succ,
-                            color = SafetyGreen,
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.SemiBold
-                        )
-                    }
-
                     Spacer(modifier = Modifier.height(16.dp))
 
                     Box(
@@ -353,38 +340,24 @@ fun AuthScreen(
                             .fillMaxWidth()
                             .height(50.dp)
                             .bounceClick(scaleDown = 0.95f) {
-                                if (!FirebaseAuthManager.isValidEmail(email)) {
-                                    errorMessage = "Please enter a valid email address."
+                                validationError = null
+                                if (isSignUp && name.isBlank()) {
+                                    validationError = "Please enter your full name."
+                                    return@bounceClick
+                                }
+                                if (!android.util.Patterns.EMAIL_ADDRESS.matcher(email.trim()).matches()) {
+                                    validationError = "Please enter a valid email address."
                                     return@bounceClick
                                 }
                                 if (password.length < 6) {
-                                    errorMessage = "Password must be at least 6 characters long."
+                                    validationError = "Password must be at least 6 characters long."
                                     return@bounceClick
                                 }
                                 if (isSignUp && password != confirmPassword) {
-                                    errorMessage = "Passwords do not match. Please re-enter."
+                                    validationError = "Passwords do not match. Please re-enter."
                                     return@bounceClick
                                 }
-
-                                errorMessage = null
-                                isLoading = true
-
-                                coroutineScope.launch {
-                                    val result = if (isSignUp) {
-                                        FirebaseAuthManager.signUpWithEmail(name, email, password)
-                                    } else {
-                                        FirebaseAuthManager.logInWithEmail(email, password)
-                                    }
-                                    isLoading = false
-                                    when (result) {
-                                        is AuthResult.Success -> {
-                                            onLoginSuccess(result.uid, result.email, result.name)
-                                        }
-                                        is AuthResult.Error -> {
-                                            errorMessage = result.message
-                                        }
-                                    }
-                                }
+                                onEmailAuth(isSignUp, name, email.trim(), password)
                             }
                             .clip(RoundedCornerShape(14.dp))
                             .background(
@@ -417,43 +390,53 @@ fun AuthScreen(
                     .fillMaxWidth()
                     .height(50.dp)
                     .bounceClick(scaleDown = 0.96f) {
-                        errorMessage = null
-                        isLoading = true
-                        coroutineScope.launch {
-                            val result = FirebaseAuthManager.signInWithGoogle(context)
-                            isLoading = false
-                            when (result) {
-                                is AuthResult.Success -> {
-                                    onLoginSuccess(result.uid, result.email, result.name)
-                                }
-                                is AuthResult.Error -> {
-                                    errorMessage = result.message
-                                }
-                            }
+                        if (!isLoading) {
+                            validationError = null
+                            onGoogleSignIn()
                         }
                     }
                     .clip(RoundedCornerShape(14.dp))
                     .background(Color.White),
                 contentAlignment = Alignment.Center
             ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.Center
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.AccountCircle,
-                        contentDescription = "Google",
-                        tint = SafeRouteBlue,
-                        modifier = Modifier.size(22.dp)
+                if (isLoading) {
+                    CircularProgressIndicator(
+                        color = SafeRouteBlue,
+                        modifier = Modifier.size(22.dp),
+                        strokeWidth = 2.dp
                     )
-                    Spacer(modifier = Modifier.width(10.dp))
-                    Text(
-                        text = LanguageManager.get("sign_in_with_google"),
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 14.sp,
-                        color = Color(0xFF1F2937)
-                    )
+                } else {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.AccountCircle,
+                            contentDescription = "Google",
+                            tint = SafeRouteBlue,
+                            modifier = Modifier.size(22.dp)
+                        )
+                        Spacer(modifier = Modifier.width(10.dp))
+                        Text(
+                            text = LanguageManager.get("sign_in_with_google"),
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 14.sp,
+                            color = Color(0xFF1F2937)
+                        )
+                    }
                 }
+            }
+
+            if (errorMessage != null && errorMessage.contains("Google", ignoreCase = true)) {
+                Spacer(modifier = Modifier.height(10.dp))
+                Text(
+                    text = errorMessage,
+                    color = SafetyRed,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Medium,
+                    textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp)
+                )
             }
 
             Spacer(modifier = Modifier.height(12.dp))
@@ -477,7 +460,7 @@ fun AuthScreen(
 
             TextButton(onClick = {
                 isSignUp = !isSignUp
-                errorMessage = null
+                validationError = null
             }) {
                 Text(
                     text = if (isSignUp) "Already have an account? Log In" else "Don't have an account? Sign Up",
@@ -538,7 +521,7 @@ fun AuthScreen(
                                 focusedIndicatorColor = SafeRouteBlue
                             )
                         )
-                        forgotPasswordMessage?.let { msg ->
+                        resetPasswordMessage?.let { msg ->
                             Spacer(modifier = Modifier.height(8.dp))
                             Text(text = msg, fontSize = 12.sp, color = SafeRouteTeal, fontWeight = FontWeight.SemiBold)
                         }
@@ -548,20 +531,23 @@ fun AuthScreen(
                     Box(
                         modifier = Modifier
                             .bounceClick(scaleDown = 0.92f) {
-                                coroutineScope.launch {
-                                    val res = FirebaseAuthManager.sendPasswordReset(forgotPasswordEmail)
-                                    if (res.isSuccess) {
-                                        forgotPasswordMessage = res.getOrNull() ?: "Instructions sent!"
-                                    } else {
-                                        forgotPasswordMessage = res.exceptionOrNull()?.message ?: "Failed to send reset email."
-                                    }
+                                if (forgotPasswordEmail.isNotBlank()) {
+                                    onResetPassword(forgotPasswordEmail.trim())
                                 }
                             }
                             .clip(RoundedCornerShape(10.dp))
                             .background(SafeRouteBlue)
                             .padding(horizontal = 14.dp, vertical = 8.dp)
                     ) {
-                        Text(LanguageManager.get("send_reset_link"), color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                        if (resetPasswordLoading) {
+                            CircularProgressIndicator(
+                                color = Color.White,
+                                modifier = Modifier.size(16.dp),
+                                strokeWidth = 2.dp
+                            )
+                        } else {
+                            Text(LanguageManager.get("send_reset_link"), color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                        }
                     }
                 },
                 dismissButton = {

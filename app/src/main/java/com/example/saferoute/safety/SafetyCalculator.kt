@@ -197,6 +197,27 @@ object SafetyCalculator {
         incidentZones: List<IncidentZone> = emptyList(),
         routeId: String = "route"
     ): SafetyScoreDetails {
+        val routeLengthMeters = if (routeCoordinates.size >= 2) {
+            var sum = 0.0
+            for (i in 0 until routeCoordinates.size - 1) {
+                sum += calculateDistanceMeters(
+                    routeCoordinates[i].first, routeCoordinates[i].second,
+                    routeCoordinates[i + 1].first, routeCoordinates[i + 1].second
+                )
+            }
+            sum
+        } else 0.0
+
+        val partialFraction = if (corridorData.isPartialData) {
+            if (corridorData.totalChunkCount > 0) {
+                corridorData.failedChunkCount.toFloat() / corridorData.totalChunkCount.toFloat()
+            } else {
+                0f
+            }
+        } else {
+            0f
+        }
+
         // 1. Street Lighting Factor
         val totalWays = corridorData.totalWaysCount
         val litWays = corridorData.litWaysCount
@@ -229,7 +250,10 @@ object SafetyCalculator {
 
         val hasActivityData = totalPlaces > 0
         val rawActivity: Float? = if (hasActivityData) {
-            val openDensity = corridorData.openShopsDensityPer100m
+            // When only some long-route chunks returned, normalise density by the covered length
+            // so a few successful chunks are not unfairly diluted by the missing ones.
+            val coverageRatio = (1f - partialFraction).coerceAtLeast(0.25f)
+            val openDensity = corridorData.openShopsDensityPer100m / coverageRatio
             ((openDensity / SafetyWeightConfig.TARGET_OPEN_PLACES_PER_100M) * 100f).coerceIn(20f, 98f)
         } else {
             null
@@ -318,10 +342,16 @@ object SafetyCalculator {
             knownFactors >= 2 -> com.example.saferoute.data.model.DataConfidence.MEDIUM
             else -> com.example.saferoute.data.model.DataConfidence.LOW
         }
+        // Partial long-route data can never claim HIGH confidence.
+        val effectiveConfidence = if (corridorData.isPartialData && confidence == com.example.saferoute.data.model.DataConfidence.HIGH) {
+            com.example.saferoute.data.model.DataConfidence.MEDIUM
+        } else {
+            confidence
+        }
 
         // 7. Composite score calculation (Only if confidence >= MEDIUM)
         val compositeScore: Int
-        if (confidence != com.example.saferoute.data.model.DataConfidence.LOW) {
+        if (effectiveConfidence != com.example.saferoute.data.model.DataConfidence.LOW) {
             val effLighting = rawLighting ?: 50f
             val effActivity = rawActivity ?: 50f
             val effHelp = helpCoverage ?: 50f
@@ -347,24 +377,20 @@ object SafetyCalculator {
             compositeScore = 0
         }
 
-        // 8. Warning for long routes or leaving Coimbatore bounds
-        val routeLengthMeters = if (routeCoordinates.size >= 2) {
-            var sum = 0.0
-            for (i in 0 until routeCoordinates.size - 1) {
-                sum += calculateDistanceMeters(
-                    routeCoordinates[i].first, routeCoordinates[i].second,
-                    routeCoordinates[i + 1].first, routeCoordinates[i + 1].second
-                )
-            }
-            sum
-        } else 0.0
-
+        // 8. Warning for long routes, partial data or leaving Coimbatore bounds
         val leavesCoimbatore = routeCoordinates.any { pt ->
             pt.first < 10.8800 || pt.first > 11.1500 || pt.second < 76.8500 || pt.second > 77.1000
         }
         val isLongerThan25Km = routeLengthMeters > 25000.0
 
         val reliabilityWarning = when {
+            corridorData.isPartialData && corridorData.failedChunkCount >= corridorData.totalChunkCount && corridorData.totalChunkCount > 0 ->
+                "Safety data unavailable for this route: all ${corridorData.totalChunkCount} corridor sections timed out. Tap Retry to recalculate."
+            corridorData.isPartialData -> {
+                val missingKm = corridorData.unavailableDistanceM / 1000.0
+                val missingLabel = if (missingKm > 0) " (${"%.1f".format(missingKm)} km marked data unavailable)" else ""
+                "Partial data: ${corridorData.failedChunkCount} of ${corridorData.totalChunkCount} corridor sections could not be loaded$missingLabel. Score uses the sections that returned; tap Retry for the rest."
+            }
             isLongerThan25Km && leavesCoimbatore -> "Warning: Route exceeds 25 km and extends beyond Coimbatore municipal boundaries; safety data is not reliable here."
             isLongerThan25Km -> "Warning: Route exceeds 25 km; safety data is not reliable along long-distance stretches."
             leavesCoimbatore -> "Warning: Route extends outside Coimbatore city area; safety data is not reliable here."
@@ -372,7 +398,8 @@ object SafetyCalculator {
         }
 
         val reason = when {
-            confidence == com.example.saferoute.data.model.DataConfidence.LOW -> "Safety score unavailable - limited data"
+            effectiveConfidence == com.example.saferoute.data.model.DataConfidence.LOW -> "Safety score unavailable - limited data"
+            corridorData.isPartialData -> "Safety score based on partial corridor data; ${corridorData.failedChunkCount} section(s) missing"
             compositeScore >= 80 -> "High verified safety: real lighting and active open establishments confirmed"
             compositeScore >= 60 -> "Moderate verified safety: active road corridor with intermittent facilities"
             else -> "Caution required: limited help facilities or low lighting confirmed"
@@ -400,7 +427,7 @@ object SafetyCalculator {
             incidentFactText = incidentFact,
             activityFactText = activityFact,
             roadTypeFactText = roadTypeFactText,
-            dataConfidence = confidence,
+            dataConfidence = effectiveConfidence,
             hasIncidentData = hasIncidentData,
             hasLightingData = (rawLighting != null),
             hasActivityData = hasActivityData,

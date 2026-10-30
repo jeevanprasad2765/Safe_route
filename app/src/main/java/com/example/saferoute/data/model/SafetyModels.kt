@@ -68,7 +68,8 @@ data class SafetyScoreDetails(
     val hasIncidentData: Boolean = false,
     val hasLightingData: Boolean = false,
     val hasActivityData: Boolean = false,
-    val reliabilityWarning: String? = null
+    val reliabilityWarning: String? = null,
+    val isEnrichmentPending: Boolean = false
 ) {
     val tier: SafetyTier
         get() = when {

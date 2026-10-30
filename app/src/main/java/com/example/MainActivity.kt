@@ -1,11 +1,16 @@
 package com.example
 
+import android.Manifest
 import android.os.Bundle
 import android.util.Log
+import android.widget.Toast
 import java.io.File
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.fadeIn
@@ -14,17 +19,23 @@ import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.example.saferoute.data.db.UserProfileEntity
 import com.example.saferoute.data.model.RouteOption
@@ -45,6 +56,7 @@ import com.example.saferoute.ui.screens.TripHistoryScreen
 import com.example.saferoute.ui.screens.TripSummaryScreen
 import com.example.saferoute.ui.viewmodel.ScreenState
 import com.example.saferoute.ui.viewmodel.SafeRouteViewModel
+import com.example.saferoute.util.SosManager
 import com.example.ui.theme.SafeRouteTheme
 
 class MainActivity : ComponentActivity() {
@@ -74,27 +86,89 @@ class MainActivity : ComponentActivity() {
                 val activeNavRoute by viewModel.activeNavRoute.collectAsState()
                 val showSosDialog by viewModel.showSosDialog.collectAsState()
                 val appLanguage by viewModel.appLanguage.collectAsState()
-                val isVoiceSosEnabled by viewModel.isVoiceSosEnabled.collectAsState()
-                val voiceSosTriggerPhrase by viewModel.voiceSosTriggerPhrase.collectAsState()
                 val activeGroupTrip by viewModel.activeGroupTrip.collectAsState()
                 val sharedTripContacts by viewModel.sharedTripContacts.collectAsState()
-                val isDuskRouteShiftAvailable by viewModel.isDuskRouteShiftAvailable.collectAsState()
-                val firebaseStatus by viewModel.firebaseStatus.collectAsState()
                 val userCoordinates by viewModel.userCoordinates.collectAsState()
+                val authUiState by viewModel.authUiState.collectAsState()
+                val authMessage by viewModel.authMessage.collectAsState()
+                val resetPasswordMessage by viewModel.resetPasswordMessage.collectAsState()
+                val resetPasswordLoading by viewModel.resetPasswordLoading.collectAsState()
+                val sosState by viewModel.sosState.collectAsState()
+
+                val context = LocalContext.current
+                val sosPermissionLauncher = rememberLauncherForActivityResult(
+                    contract = ActivityResultContracts.RequestMultiplePermissions()
+                ) { _ ->
+                    // Start the real SOS regardless: ACTION_CALL falls back to the dialer, and a
+                    // denied SMS permission is reported as a failed step instead of fake success.
+                    viewModel.triggerSosAlerts()
+                }
+
+                LaunchedEffect(authMessage) {
+                    authMessage?.let { message ->
+                        Toast.makeText(context, message, Toast.LENGTH_LONG).show()
+                        viewModel.clearAuthMessage()
+                    }
+                }
 
                 val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
                 var activeDrawerRoute by remember { mutableStateOf<RouteOption?>(null) }
+                var showEndTripDialog by remember { mutableStateOf(false) }
+                var lastBackPressAt by remember { mutableLongStateOf(0L) }
 
                 val defaultProfile = profile ?: UserProfileEntity(
-                    email = "alex.taylor@saferoute.io",
-                    name = "Alex Taylor",
-                    isPlusMember = false,
+                    name = "SafeRoute User",
+                    email = "",
+                    isLoggedIn = true,
                     safetyPreference = "ALWAYS_SAFETY",
                     highContrastMode = false,
-                    completedOnboarding = true
+                    completedOnboarding = false
                 )
 
                 val showBottomBarAndSos = screenState is ScreenState.Main
+
+                BackHandler(enabled = true) {
+                    when {
+                        showSosDialog -> {
+                            // The SOS dialog owns back while it is on screen; sending cannot be
+                            // interrupted mid-flight.
+                            if (!sosState.isSending) viewModel.closeSosDialog()
+                        }
+
+                        activeDrawerRoute != null -> activeDrawerRoute = null
+
+                        screenState is ScreenState.ActiveNav -> showEndTripDialog = true
+
+                        screenState is ScreenState.RouteRecommendations ||
+                            screenState is ScreenState.TripSummary -> viewModel.navigateHome()
+
+                        screenState is ScreenState.Main -> {
+                            when {
+                                navTab == "navigate" && activeNavRoute != null ->
+                                    showEndTripDialog = true
+
+                                navTab != "home" -> viewModel.navigateToTab("home")
+
+                                else -> {
+                                    val now = System.currentTimeMillis()
+                                    if (now - lastBackPressAt <= 2_000L) {
+                                        finish()
+                                    } else {
+                                        lastBackPressAt = now
+                                        Toast.makeText(
+                                            context,
+                                            "Press back again to exit",
+                                            Toast.LENGTH_SHORT
+                                        ).show()
+                                    }
+                                }
+                            }
+                        }
+
+                        // Splash / Auth / Onboarding: consume back so the app never closes by accident.
+                        else -> Unit
+                    }
+                }
 
                 Scaffold(
                     modifier = Modifier.fillMaxSize(),
@@ -144,9 +218,17 @@ class MainActivity : ComponentActivity() {
                                     }
                                     is ScreenState.Auth -> {
                                         AuthScreen(
-                                            onLoginSuccess = { uid, email, name ->
-                                                viewModel.loginUser(uid, email, name)
-                                            }
+                                            authState = authUiState,
+                                            resetPasswordMessage = resetPasswordMessage,
+                                            resetPasswordLoading = resetPasswordLoading,
+                                            onGoogleSignIn = {
+                                                viewModel.signInWithGoogle(this@MainActivity)
+                                            },
+                                            onEmailAuth = { isSignUp, name, email, password ->
+                                                viewModel.signInWithEmail(name, email, password, isSignUp)
+                                            },
+                                            onResetPassword = { email -> viewModel.resetPassword(email) },
+                                            onClearResetMessage = { viewModel.clearResetPasswordMessage() }
                                         )
                                     }
                                     is ScreenState.Main -> {
@@ -164,9 +246,11 @@ class MainActivity : ComponentActivity() {
                                                     viewModel.calculateMultiStopRoute(src, dest, waypoints, srcCoords, dstCoords)
                                                 },
                                                 onNavigateToAuth = { viewModel.logout() },
-                                                onAddSavedPlace = {
-                                                    viewModel.addSavedPlace("Work (TIDEL)", "Peelamedu, Coimbatore", "work", 11.025, 76.992)
+                                                onSaveSavedPlace = { title, icon, address, lat, lng ->
+                                                    viewModel.addSavedPlace(title, address, icon, lat, lng)
                                                 },
+                                                onUpdateSavedPlace = { viewModel.updateSavedPlace(it) },
+                                                onDeleteSavedPlace = { viewModel.deleteSavedPlace(it) },
                                                 onStartGroupTrip = { viewModel.startGroupTripMode() }
                                             )
                                             "navigate" -> {
@@ -175,14 +259,11 @@ class MainActivity : ComponentActivity() {
                                                     ActiveNavigationScreen(
                                                         route = activeRoute,
                                                         instructions = viewModel.getTurnInstructions(activeRoute.id),
-                                                        emergencyContactName = contacts.firstOrNull()?.name ?: "Sarah (Sister)",
+                                                        emergencyContactName = contacts.firstOrNull()?.name ?: "Emergency contact",
                                                         contacts = contacts,
                                                         incidentZones = viewModel.getIncidentZones(),
                                                         activeGroupTrip = activeGroupTrip,
                                                         sharedTripContacts = sharedTripContacts,
-                                                        isVoiceSosEnabled = isVoiceSosEnabled,
-                                                        voiceSosTriggerPhrase = voiceSosTriggerPhrase,
-                                                        isDuskRouteShiftAvailable = isDuskRouteShiftAvailable,
                                                         onToggleContactShare = { name -> viewModel.toggleContactTripShare(name) },
                                                         onStopAllSharing = { viewModel.stopAllContactTripSharing() },
                                                         onSwitchRoute = { viewModel.calculateMultiStopRoute() },
@@ -210,21 +291,12 @@ class MainActivity : ComponentActivity() {
                                             "profile" -> ProfileScreen(
                                                 userProfile = defaultProfile,
                                                 appLanguage = appLanguage,
-                                                isVoiceSosEnabled = isVoiceSosEnabled,
-                                                voiceSosTriggerPhrase = voiceSosTriggerPhrase,
-                                                firebaseStatus = firebaseStatus,
-                                                onSetLanguage = { lang -> viewModel.setLanguage(lang) },
-                                                onToggleVoiceSos = { enabled -> viewModel.toggleVoiceSos(enabled) },
-                                                onSetVoiceSosTriggerPhrase = { phrase -> viewModel.setVoiceSosTriggerPhrase(phrase) },
                                                 contacts = contacts,
                                                 onAddContact = { n, p, r -> viewModel.addContact(n, p, r) },
                                                 onDeleteContact = { c -> viewModel.deleteContact(c) },
                                                 onUpdateSafetyPref = { pref -> viewModel.updateSafetyPreference(pref) },
-                                                onTogglePlus = { isPlus -> viewModel.setPlusMembership(isPlus) },
-                                                onTriggerSync = { onDone -> viewModel.syncWithFirebase(onDone) },
-                                                onConfigureCustomFirebase = { proj, key, app, onDone ->
-                                                    viewModel.configureCustomFirebase(proj, key, app, onDone)
-                                                },
+                                                alsoCall112 = defaultProfile.alsoCall112,
+                                                onToggleAlsoCall112 = { enabled -> viewModel.setAlsoCall112(enabled) },
                                                 onLogout = { viewModel.logout() }
                                             )
                                             else -> HomeScreen(
@@ -240,7 +312,11 @@ class MainActivity : ComponentActivity() {
                                                     viewModel.calculateMultiStopRoute(src, dest, waypoints, srcCoords, dstCoords)
                                                 },
                                                 onNavigateToAuth = { viewModel.logout() },
-                                                onAddSavedPlace = {},
+                                                onSaveSavedPlace = { title, icon, address, lat, lng ->
+                                                    viewModel.addSavedPlace(title, address, icon, lat, lng)
+                                                },
+                                                onUpdateSavedPlace = { viewModel.updateSavedPlace(it) },
+                                                onDeleteSavedPlace = { viewModel.deleteSavedPlace(it) },
                                                 onStartGroupTrip = { viewModel.startGroupTripMode() }
                                             )
                                         }
@@ -262,6 +338,7 @@ class MainActivity : ComponentActivity() {
                                             },
                                             onRouteSelected = { id -> viewModel.selectRoute(id) },
                                             onOpenSafetyDetails = { route -> activeDrawerRoute = route },
+                                            onRetryEnrichment = { viewModel.retryEnrichment() },
                                             onBack = { viewModel.navigateHome() }
                                         )
                                     }
@@ -269,13 +346,10 @@ class MainActivity : ComponentActivity() {
                                         ActiveNavigationScreen(
                                             route = state.route,
                                             instructions = viewModel.getTurnInstructions(state.route.id),
-                                            emergencyContactName = contacts.firstOrNull()?.name ?: "Sarah (Sister)",
+                                            emergencyContactName = contacts.firstOrNull()?.name ?: "Emergency contact",
                                             contacts = contacts,
                                             activeGroupTrip = activeGroupTrip,
                                             sharedTripContacts = sharedTripContacts,
-                                            isVoiceSosEnabled = isVoiceSosEnabled,
-                                            voiceSosTriggerPhrase = voiceSosTriggerPhrase,
-                                            isDuskRouteShiftAvailable = isDuskRouteShiftAvailable,
                                             onToggleContactShare = { name -> viewModel.toggleContactTripShare(name) },
                                             onStopAllSharing = { viewModel.stopAllContactTripSharing() },
                                             onSwitchRoute = {
@@ -322,9 +396,55 @@ class MainActivity : ComponentActivity() {
                         if (showSosDialog) {
                             SosCountdownDialog(
                                 contacts = contacts,
+                                sosState = sosState,
                                 onDismissRequest = { viewModel.closeSosDialog() },
-                                onAlertTriggered = { /* Alert triggered state handled in dialog */ },
-                                onStandDownAlert = { viewModel.closeSosDialog() }
+                                onCountdownFinished = { viewModel.onSosCountdownFinished() },
+                                onGrantPermissions = {
+                                    val needed = buildList {
+                                        if (!SosManager.hasCallPermission(context)) {
+                                            add(Manifest.permission.CALL_PHONE)
+                                        }
+                                        if (!SosManager.hasSmsPermission(context)) {
+                                            add(Manifest.permission.SEND_SMS)
+                                        }
+                                    }
+                                    if (needed.isEmpty()) {
+                                        viewModel.triggerSosAlerts()
+                                    } else {
+                                        sosPermissionLauncher.launch(needed.toTypedArray())
+                                    }
+                                },
+                                onRetry = { viewModel.retrySosAlerts() },
+                                onStandDown = { viewModel.closeSosDialog() }
+                            )
+                        }
+
+                        // END TRIP CONFIRMATION (Android back while navigating)
+                        if (showEndTripDialog) {
+                            AlertDialog(
+                                onDismissRequest = { showEndTripDialog = false },
+                                title = { Text("End trip?") },
+                                text = {
+                                    Text(
+                                        "Your active navigation and live location sharing will stop."
+                                    )
+                                },
+                                confirmButton = {
+                                    TextButton(
+                                        onClick = {
+                                            showEndTripDialog = false
+                                            viewModel.stopAllContactTripSharing()
+                                            viewModel.cancelNavigation()
+                                        }
+                                    ) {
+                                        Text("End trip")
+                                    }
+                                },
+                                dismissButton = {
+                                    TextButton(onClick = { showEndTripDialog = false }) {
+                                        Text("Cancel")
+                                    }
+                                }
                             )
                         }
                     }

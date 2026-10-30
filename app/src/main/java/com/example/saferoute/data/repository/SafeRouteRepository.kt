@@ -6,6 +6,8 @@ import com.example.saferoute.data.db.SavedPlaceDao
 import com.example.saferoute.data.db.SavedPlaceEntity
 import com.example.saferoute.data.db.TripHistoryDao
 import com.example.saferoute.data.db.TripHistoryEntity
+import com.example.saferoute.data.db.UserOnboardingDao
+import com.example.saferoute.data.db.UserOnboardingEntity
 import com.example.saferoute.data.db.UserProfileDao
 import com.example.saferoute.data.db.UserProfileEntity
 import com.example.saferoute.data.model.IncidentZone
@@ -15,6 +17,7 @@ import com.example.saferoute.data.model.SafetyScoreDetails
 import com.example.saferoute.data.model.TimeOfDay
 import com.example.saferoute.data.model.TurnInstruction
 import com.example.saferoute.safety.SafetyCalculator
+import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.firstOrNull
 import java.util.UUID
@@ -24,6 +27,7 @@ class SafeRouteRepository(
     private val tripDao: TripHistoryDao,
     private val savedPlaceDao: SavedPlaceDao,
     private val userProfileDao: UserProfileDao,
+    private val userOnboardingDao: UserOnboardingDao,
     private val context: android.content.Context? = null
 ) {
 
@@ -37,89 +41,9 @@ class SafeRouteRepository(
         if (existingProfile == null) {
             userProfileDao.insertOrUpdateProfile(UserProfileEntity())
         }
-
-        val contacts = allContacts.firstOrNull()
-        if (contacts.isNullOrEmpty()) {
-            contactDao.insertContact(
-                EmergencyContactEntity(
-                    name = "Sarah Taylor",
-                    phone = "+1 (555) 019-2834",
-                    relationship = "Sister",
-                    isPrimary = true
-                )
-            )
-            contactDao.insertContact(
-                EmergencyContactEntity(
-                    name = "Marcus Vance",
-                    phone = "+1 (555) 014-9981",
-                    relationship = "Partner",
-                    isPrimary = false
-                )
-            )
-        }
-
-        val places = savedPlaces.firstOrNull()
-        if (places.isNullOrEmpty()) {
-            savedPlaceDao.insertPlace(
-                SavedPlaceEntity(
-                    title = "Home",
-                    address = "DB Road, RS Puram, Coimbatore",
-                    iconName = "home",
-                    latitude = 11.0072,
-                    longitude = 76.9515
-                )
-            )
-            savedPlaceDao.insertPlace(
-                SavedPlaceEntity(
-                    title = "Work",
-                    address = "TIDEL Park, Peelamedu, Coimbatore",
-                    iconName = "work",
-                    latitude = 11.0263,
-                    longitude = 77.0028
-                )
-            )
-            savedPlaceDao.insertPlace(
-                SavedPlaceEntity(
-                    title = "Gym",
-                    address = "Race Course Promenade, Coimbatore",
-                    iconName = "fitness",
-                    latitude = 10.9990,
-                    longitude = 76.9730
-                )
-            )
-        }
-
-        val trips = allTripHistory.firstOrNull()
-        if (trips.isNullOrEmpty()) {
-            val now = System.currentTimeMillis()
-            val day = 86400000L
-            tripDao.insertTrip(
-                TripHistoryEntity(
-                    originName = "Gandhipuram Central",
-                    destinationName = "Peelamedu IT Hub",
-                    timestamp = now - (day * 1),
-                    durationSeconds = 960, // 16 mins
-                    distanceKm = 5.2,
-                    avgSafetyScore = 95,
-                    routeTypeName = "Avinashi Road Safe Corridor",
-                    userRating = 5,
-                    feedbackNote = "Brightly lit arterial highway, very high crowd activity and patrol presence."
-                )
-            )
-            tripDao.insertTrip(
-                TripHistoryEntity(
-                    originName = "Saibaba Colony",
-                    destinationName = "RS Puram DB Road",
-                    timestamp = now - (day * 2),
-                    durationSeconds = 540, // 9 mins
-                    distanceKm = 2.8,
-                    avgSafetyScore = 88,
-                    routeTypeName = "DB Road Commercial Avenue",
-                    userRating = 4,
-                    feedbackNote = "Well-lit commercial strip with active shops and CCTV."
-                )
-            )
-        }
+        // Emergency contacts and trips are intentionally not seeded with demo data. New users
+        // complete emergency-contact setup during onboarding; returning users restore theirs
+        // from Room / Firestore.
     }
 
     suspend fun insertContact(name: String, phone: String, relationship: String, isPrimary: Boolean) {
@@ -142,6 +66,15 @@ class SafeRouteRepository(
 
     suspend fun savePlace(title: String, address: String, iconName: String, lat: Double, lng: Double) {
         savedPlaceDao.insertPlace(SavedPlaceEntity(title = title, address = address, iconName = iconName, latitude = lat, longitude = lng))
+        val current = userProfile.firstOrNull()
+        if (current != null && current.isLoggedIn && current.userId.isNotBlank()) {
+            val all = savedPlaceDao.getAllSavedPlaces().firstOrNull() ?: emptyList()
+            com.example.saferoute.data.firebase.FirebaseFirestoreManager.syncSavedPlaces(current.userId, all)
+        }
+    }
+
+    suspend fun updatePlace(place: SavedPlaceEntity) {
+        savedPlaceDao.insertPlace(place) // REPLACE strategy updates the row with matching id
         val current = userProfile.firstOrNull()
         if (current != null && current.isLoggedIn && current.userId.isNotBlank()) {
             val all = savedPlaceDao.getAllSavedPlaces().firstOrNull() ?: emptyList()
@@ -213,7 +146,55 @@ class SafeRouteRepository(
     }
 
     suspend fun setOnboardingCompleted(completed: Boolean) {
+        val current = userProfile.firstOrNull() ?: UserProfileEntity()
+        val uid = current.userId.ifBlank {
+            com.example.saferoute.data.firebase.FirebaseAuthManager.currentUserId ?: ""
+        }
         userProfileDao.setOnboardingCompleted(completed)
+        if (uid.isNotBlank()) {
+            setOnboardingCompletedForUser(uid, completed)
+        }
+    }
+
+    suspend fun setOnboardingCompletedForUser(userId: String, completed: Boolean) {
+        if (userId.isBlank()) return
+        userOnboardingDao.upsert(
+            UserOnboardingEntity(userId = userId, completedOnboarding = completed)
+        )
+        com.example.saferoute.data.firebase.FirebaseFirestoreManager.setOnboardingCompleted(userId, completed)
+    }
+
+    /**
+     * Per-user onboarding state. Room is authoritative; Firestore is a best-effort backup.
+     * A returning Firebase session with unreadable metadata is assumed completed so users are
+     * never trapped in onboarding again.
+     */
+    suspend fun isOnboardingCompleted(userId: String): Boolean {
+        if (userId.isBlank()) return false
+        val local = userOnboardingDao.getOnboardingCompleted(userId)
+        if (local != null) return local
+
+        val remote = try {
+            kotlinx.coroutines.withTimeoutOrNull(4_000) {
+                com.example.saferoute.data.firebase.FirebaseFirestoreManager.fetchUserData(userId)
+                    ?.completedOnboarding
+            }
+        } catch (_: Throwable) {
+            null
+        }
+        val resolved = remote ?: true
+        userOnboardingDao.upsert(
+            UserOnboardingEntity(userId = userId, completedOnboarding = resolved)
+        )
+        return resolved
+    }
+
+    suspend fun setAlsoCall112(enabled: Boolean) {
+        userProfileDao.setAlsoCall112(enabled)
+    }
+
+    suspend fun getAlsoCall112(): Boolean {
+        return userProfile.firstOrNull()?.alsoCall112 ?: false
     }
 
     suspend fun setPlusMembership(isPlus: Boolean) {
@@ -236,71 +217,108 @@ class SafeRouteRepository(
         }
     }
 
-    suspend fun logInUser(userId: String, email: String, name: String) {
+    /**
+     * Persists a Firebase-authenticated session. Returns whether onboarding is complete.
+     * Newly created accounts always start onboarding; returning users keep their per-user state.
+     */
+    suspend fun logInUser(
+        userId: String,
+        email: String,
+        name: String,
+        isNewUser: Boolean = false
+    ): Boolean {
         val current = userProfile.firstOrNull() ?: UserProfileEntity()
+
+        val firestoreData = try {
+            kotlinx.coroutines.withTimeoutOrNull(5_000) {
+                com.example.saferoute.data.firebase.FirebaseFirestoreManager.fetchUserData(userId)
+            }
+        } catch (_: Throwable) {
+            null
+        }
+
+        val localOnboarding = userOnboardingDao.getOnboardingCompleted(userId)
+        val completedOnboarding = when {
+            isNewUser -> false
+            localOnboarding != null -> localOnboarding
+            firestoreData != null -> firestoreData.completedOnboarding
+            current.userId == userId && current.completedOnboarding -> true
+            // Existing Firebase account with no readable metadata: assume onboarding was done.
+            else -> true
+        }
+
         val updated = current.copy(
             userId = userId,
             email = email,
             name = name,
-            isLoggedIn = true
+            isLoggedIn = true,
+            completedOnboarding = completedOnboarding
         )
         userProfileDao.insertOrUpdateProfile(updated)
+        userOnboardingDao.upsert(
+            UserOnboardingEntity(userId = userId, completedOnboarding = completedOnboarding)
+        )
 
-        // Fetch and sync Firestore data
-        if (userId.isNotBlank()) {
-            val firestoreData = com.example.saferoute.data.firebase.FirebaseFirestoreManager.fetchUserData(userId)
-            if (firestoreData != null) {
-                // If firestore had saved emergency contacts, populate them
-                if (firestoreData.emergencyContacts.isNotEmpty()) {
-                    val contactEntities = firestoreData.emergencyContacts.mapNotNull { m ->
-                        val cName = m["name"] as? String ?: return@mapNotNull null
-                        val cPhone = m["phone"] as? String ?: ""
-                        val cRel = m["relationship"] as? String ?: "Contact"
-                        val cPrimary = m["isPrimary"] as? Boolean ?: false
-                        EmergencyContactEntity(name = cName, phone = cPhone, relationship = cRel, isPrimary = cPrimary)
-                    }
-                    if (contactEntities.isNotEmpty()) {
-                        contactDao.clearContacts()
-                        contactDao.insertContacts(contactEntities)
-                    }
+        if (firestoreData != null) {
+            // Restore the user's contacts/places if the cloud copy has any.
+            if (firestoreData.emergencyContacts.isNotEmpty()) {
+                val contactEntities = firestoreData.emergencyContacts.mapNotNull { m ->
+                    val cName = m["name"] as? String ?: return@mapNotNull null
+                    val cPhone = m["phone"] as? String ?: ""
+                    val cRel = m["relationship"] as? String ?: "Contact"
+                    val cPrimary = m["isPrimary"] as? Boolean ?: false
+                    EmergencyContactEntity(name = cName, phone = cPhone, relationship = cRel, isPrimary = cPrimary)
                 }
-
-                // If firestore had saved places, populate them
-                if (firestoreData.savedPlaces.isNotEmpty()) {
-                    val placeEntities = firestoreData.savedPlaces.mapNotNull { m ->
-                        val pTitle = m["title"] as? String ?: return@mapNotNull null
-                        val pAddr = m["address"] as? String ?: ""
-                        val pIcon = m["iconName"] as? String ?: "home"
-                        val pLat = (m["latitude"] as? Number)?.toDouble() ?: 11.0072
-                        val pLng = (m["longitude"] as? Number)?.toDouble() ?: 76.9515
-                        SavedPlaceEntity(title = pTitle, address = pAddr, iconName = pIcon, latitude = pLat, longitude = pLng)
-                    }
-                    if (placeEntities.isNotEmpty()) {
-                        savedPlaceDao.clearPlaces()
-                        savedPlaceDao.insertPlaces(placeEntities)
-                    }
-                }
-            } else {
-                // First time sync to Firestore
-                com.example.saferoute.data.firebase.FirebaseFirestoreManager.saveUserProfile(
-                    userId = userId,
-                    name = name,
-                    email = email,
-                    phone = updated.phone,
-                    language = updated.languagePreference,
-                    safetyPreference = updated.safetyPreference,
-                    isPlusMember = updated.isPlusMember
-                )
-                val existingContacts = contactDao.getAllContacts().firstOrNull() ?: emptyList()
-                if (existingContacts.isNotEmpty()) {
-                    com.example.saferoute.data.firebase.FirebaseFirestoreManager.syncEmergencyContacts(userId, existingContacts)
-                }
-                val existingPlaces = savedPlaceDao.getAllSavedPlaces().firstOrNull() ?: emptyList()
-                if (existingPlaces.isNotEmpty()) {
-                    com.example.saferoute.data.firebase.FirebaseFirestoreManager.syncSavedPlaces(userId, existingPlaces)
+                if (contactEntities.isNotEmpty()) {
+                    contactDao.clearContacts()
+                    contactDao.insertContacts(contactEntities)
                 }
             }
+
+            if (firestoreData.savedPlaces.isNotEmpty()) {
+                val placeEntities = firestoreData.savedPlaces.mapNotNull { m ->
+                    val pTitle = m["title"] as? String ?: return@mapNotNull null
+                    val pAddr = m["address"] as? String ?: ""
+                    val pIcon = m["iconName"] as? String ?: "home"
+                    val pLat = (m["latitude"] as? Number)?.toDouble() ?: 11.0072
+                    val pLng = (m["longitude"] as? Number)?.toDouble() ?: 76.9515
+                    SavedPlaceEntity(title = pTitle, address = pAddr, iconName = pIcon, latitude = pLat, longitude = pLng)
+                }
+                if (placeEntities.isNotEmpty()) {
+                    savedPlaceDao.clearPlaces()
+                    savedPlaceDao.insertPlaces(placeEntities)
+                }
+            }
+        } else if (!isNewUser) {
+            // Existing account: make sure the cloud profile exists, but never overwrite contacts.
+            com.example.saferoute.data.firebase.FirebaseFirestoreManager.saveUserProfile(
+                userId = userId,
+                name = name,
+                email = email,
+                phone = updated.phone,
+                language = updated.languagePreference,
+                safetyPreference = updated.safetyPreference,
+                isPlusMember = updated.isPlusMember
+            )
         }
+
+        return completedOnboarding
+    }
+
+    /** Restores a session that Firebase already persisted across app restarts. */
+    suspend fun restoreSession(userId: String, email: String, name: String): Boolean {
+        val completedOnboarding = isOnboardingCompleted(userId)
+        val current = userProfile.firstOrNull() ?: UserProfileEntity()
+        userProfileDao.insertOrUpdateProfile(
+            current.copy(
+                userId = userId,
+                email = email.ifBlank { current.email },
+                name = name.ifBlank { current.name },
+                isLoggedIn = true,
+                completedOnboarding = completedOnboarding
+            )
+        )
+        return completedOnboarding
     }
 
     suspend fun logOutUser() {
@@ -309,7 +327,8 @@ class SafeRouteRepository(
         userProfileDao.insertOrUpdateProfile(
             current.copy(
                 isLoggedIn = false,
-                userId = ""
+                userId = "",
+                completedOnboarding = false
             )
         )
     }
@@ -387,6 +406,11 @@ class SafeRouteRepository(
 
     private var lastComputedRoutes: List<RouteOption> = emptyList()
 
+    /**
+     * FAST routing pass: geocoded coordinates → real geometry & alternatives already simplified.
+     * Never blocks on Overpass/POI or risk matching — returns immediately with pending safety
+     * details so route cards can render, then [enrichRoutesInBackground] fills the cards in.
+     */
     suspend fun computeRealRoutes(
         originName: String = "My Location",
         destinationName: String = "TIDEL Park, Peelamedu",
@@ -409,7 +433,9 @@ class SafeRouteRepository(
             null
         }
 
-        val routes = if (targetContext != null) {
+        if (targetContext == null) return emptyList()
+
+        val routes = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
             com.example.saferoute.data.network.GeoapifyService.fetchRealRoutes(
                 waypoints = allPoints,
                 originName = originName.ifBlank { "My Location" },
@@ -417,28 +443,70 @@ class SafeRouteRepository(
                 intermediateNames = intermediateNames,
                 timeOfDay = timeOfDay,
                 incidentZones = incidentZones,
-                context = targetContext
+                context = targetContext,
+                enrichWithCorridor = false
             )
-        } else {
-            emptyList()
         }
 
-        val routesWithRisk = routes.map { route ->
-            try {
-                val riskDetails = com.example.SafeRouteApplication.riskRepository.scoreRoute(route.pathCoordinates)
-                route.copy(roadRiskDetails = riskDetails)
-            } catch (_: Throwable) {
-                route
-            }
+        lastComputedRoutes = routes
+        return routes
+    }
+
+    /**
+     * BACKGROUND ENRICHMENT: fetches corridor (Overpass/POI) data, safety scoring and road-risk
+     * matching per route — in parallel, capped at 6 s per route, never blocking route display.
+     * Scoring runs on Dispatchers.Default. Calls [onRouteEnriched] progressively (routeId, route)
+     * so route cards fill in as soon as each individual route finishes.
+     */
+    suspend fun enrichRoutesInBackground(
+        routes: List<RouteOption>,
+        timeOfDay: TimeOfDay = TimeOfDay.DUSK,
+        prioritizeSafety: Boolean = true,
+        incidentZones: List<IncidentZone> = emptyList(),
+        routeCacheKey: String = "",
+        onRouteEnriched: (routeId: String, enrichedRoute: RouteOption) -> Unit = { _, _ -> }
+    ): List<RouteOption> = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
+        val routeList = routes
+        val enriched = com.example.saferoute.data.network.GeoapifyService.enrichRoutesWithCorridor(
+            context = context ?: com.example.SafeRouteApplication.appContext,
+            routes = routeList,
+            timeOfDay = timeOfDay,
+            incidentZones = incidentZones,
+            routeCacheKey = routeCacheKey,
+            onRouteEnriched = onRouteEnriched
+        )
+
+        // Road-risk matching (geohash indexed) in parallel on Default dispatcher with 6 s cap
+        val enrichedWithRisk = kotlinx.coroutines.coroutineScope {
+            routeList.mapIndexed { idx, route ->
+                async {
+                    val risk = try {
+                        kotlinx.coroutines.withTimeoutOrNull(6_000) {
+                            com.example.SafeRouteApplication.riskRepository.scoreRoute(route.pathCoordinates)
+                        } ?: route.roadRiskDetails
+                    } catch (_: Throwable) {
+                        route.roadRiskDetails
+                    }
+                    enriched.getOrNull(idx)?.copy(roadRiskDetails = risk) ?: route.copy(roadRiskDetails = risk)
+                }
+            }.map { it.await() }
         }
 
-        val sorted = if (prioritizeSafety) {
-            routesWithRisk.sortedByDescending { it.safetyDetails.compositeScore }
+        val finalRoutes = safeEnrichedSort(enrichedWithRisk, prioritizeSafety)
+        lastComputedRoutes = finalRoutes
+        finalRoutes
+    }
+
+    private fun safeEnrichedSort(routes: List<RouteOption>, prioritizeSafety: Boolean): List<RouteOption> {
+        val relevant = routes.filterNot { it.safetyDetails.isEnrichmentPending }
+        if (relevant.isEmpty()) return routes
+        return if (prioritizeSafety) {
+            routes.filter { it.safetyDetails.isEnrichmentPending } +
+                relevant.sortedByDescending { it.safetyDetails.compositeScore }
         } else {
-            routesWithRisk.sortedBy { it.durationMinutes }
+            routes.filter { it.safetyDetails.isEnrichmentPending } +
+                relevant.sortedBy { it.durationMinutes }
         }
-        lastComputedRoutes = sorted
-        return sorted
     }
 
     fun computeRouteOptions(

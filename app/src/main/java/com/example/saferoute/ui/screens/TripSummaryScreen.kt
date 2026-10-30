@@ -254,49 +254,51 @@ fun TripSummaryScreen(
 
             Spacer(modifier = Modifier.height(16.dp))
 
-            // SAFETY SCORE TREND SPARKLINE
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(20.dp))
-                    .background(DarkNavyCard)
-                    .border(1.dp, GlassSurfaceBorder, RoundedCornerShape(20.dp))
-                    .padding(16.dp)
-            ) {
-                Column {
-                    Text(
-                        text = "Safety Score Segment Trend",
-                        fontSize = 14.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = Color.White
-                    )
-                    Spacer(modifier = Modifier.height(8.dp))
-
-                    Canvas(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(48.dp)
-                    ) {
-                        val points = listOf(85f, 92f, 95f, 88f, 94f, 96f)
-                        val widthStep = size.width / (points.size - 1)
-                        val path = Path()
-
-                        points.forEachIndexed { i, pt ->
-                            val x = i * widthStep
-                            val y = size.height - ((pt - 50f) / 50f * size.height)
-                            if (i == 0) path.moveTo(x, y) else path.lineTo(x, y)
-                        }
-
-                        drawPath(
-                            path = path,
-                            color = SafetyGreen,
-                            style = Stroke(width = 3.dp.toPx())
+            // SAFETY SCORE TREND SPARKLINE — only when the trip has >= 2 real leg scores
+            val trendPoints = route.legs.map { it.safetyScore.toFloat() }
+            if (trendPoints.size >= 2) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(20.dp))
+                        .background(DarkNavyCard)
+                        .border(1.dp, GlassSurfaceBorder, RoundedCornerShape(20.dp))
+                        .padding(16.dp)
+                ) {
+                    Column {
+                        Text(
+                            text = "Safety Score Segment Trend",
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color.White
                         )
+                        Spacer(modifier = Modifier.height(8.dp))
+
+                        Canvas(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(48.dp)
+                        ) {
+                            val widthStep = size.width / (trendPoints.size - 1)
+                            val path = Path()
+
+                            trendPoints.forEachIndexed { i, pt ->
+                                val x = i * widthStep
+                                val y = size.height - ((pt - 50f) / 50f * size.height)
+                                if (i == 0) path.moveTo(x, y) else path.lineTo(x, y)
+                            }
+
+                            drawPath(
+                                path = path,
+                                color = SafetyGreen,
+                                style = Stroke(width = 3.dp.toPx())
+                            )
+                        }
                     }
                 }
-            }
 
-            Spacer(modifier = Modifier.height(18.dp))
+                Spacer(modifier = Modifier.height(18.dp))
+            }
 
             // POST TRIP MICRO SURVEY
             Box(

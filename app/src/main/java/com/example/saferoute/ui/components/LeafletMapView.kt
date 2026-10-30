@@ -34,7 +34,8 @@ fun LeafletMapView(
     isNavigating: Boolean = false,
     activeInstructionText: String? = null,
     showControls: Boolean = true,
-    destinationName: String? = null
+    destinationName: String? = null,
+    onCenterChanged: ((Double, Double) -> Unit)? = null
 ) {
     GoogleMapView(
         routes = routes,
@@ -51,7 +52,8 @@ fun LeafletMapView(
         activeInstructionText = activeInstructionText,
         groupMembers = groupMembers,
         showControls = showControls,
-        destinationName = destinationName
+        destinationName = destinationName,
+        onCenterChanged = onCenterChanged
     )
 }
 

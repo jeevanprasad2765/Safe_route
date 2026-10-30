@@ -22,6 +22,14 @@
           }
         },
         {
+          "client_id": "602311398373-f5onhvukdlf5m3v1ruv2h2fr9j7v8c7l.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.aistudio.saferoute.wwcnxv",
+            "certificate_hash": "6164f5394491473fc18f6d9eb0763c288ea7dd2f"
+          }
+        },
+        {
           "client_id": "602311398373-so1pljbi32gh1jn8rhhfss5qvk5l64jf.apps.googleusercontent.com",
           "client_type": 3
         }

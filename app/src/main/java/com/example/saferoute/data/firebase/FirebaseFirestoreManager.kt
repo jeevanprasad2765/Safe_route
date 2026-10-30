@@ -41,7 +41,8 @@ object FirebaseFirestoreManager {
         phone: String = "",
         contacts: List<Map<String, Any>> = emptyList(),
         language: String = "en",
-        places: List<Map<String, Any>> = emptyList()
+        places: List<Map<String, Any>> = emptyList(),
+        completedOnboarding: Boolean = false
     ): Boolean {
         if (userId.isBlank()) return false
         return try {
@@ -56,7 +57,7 @@ object FirebaseFirestoreManager {
                 "languagePreference" to language,
                 "safetyPreference" to "ALWAYS_SAFETY",
                 "isPlusMember" to false,
-                "completedOnboarding" to true,
+                "completedOnboarding" to completedOnboarding,
                 "emergencyContacts" to contacts,
                 "savedPlaces" to places,
                 "createdAt" to now,
@@ -67,6 +68,39 @@ object FirebaseFirestoreManager {
             true
         } catch (e: Exception) {
             Log.w(TAG, "Failed to create user document in Firestore: ${e.message}")
+            false
+        }
+    }
+
+    /**
+     * True/false when Firestore answered, null when it is unavailable (offline or rules denial).
+     * Callers must treat null as "unknown", never as "document missing".
+     */
+    suspend fun userDocumentExists(userId: String): Boolean? {
+        if (userId.isBlank()) return null
+        return try {
+            val db = firestore ?: return null
+            db.collection("users").document(userId).get().await().exists()
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not check user document existence: ${e.message}")
+            null
+        }
+    }
+
+    suspend fun setOnboardingCompleted(userId: String, completed: Boolean): Boolean {
+        if (userId.isBlank()) return false
+        return try {
+            val db = firestore ?: return false
+            db.collection("users").document(userId).set(
+                mapOf(
+                    "completedOnboarding" to completed,
+                    "lastUpdated" to System.currentTimeMillis()
+                ),
+                SetOptions.merge()
+            ).await()
+            true
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to persist onboarding status: ${e.message}")
             false
         }
     }
