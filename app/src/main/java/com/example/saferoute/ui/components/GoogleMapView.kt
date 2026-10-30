@@ -287,6 +287,16 @@ fun GoogleMapView(
     remember {
         try {
             MapLibre.getInstance(context)
+            val olaKey = GeoapifyService.getOlaMapsApiKey()
+            if (olaKey.isNotBlank() && !olaKey.startsWith("YOUR_")) {
+                org.maplibre.android.storage.FileSource.getInstance(context).setResourceTransform { _, url ->
+                    if (url.contains("olamaps.io") && !url.contains("api_key=")) {
+                        if (url.contains("?")) "$url&api_key=$olaKey" else "$url?api_key=$olaKey"
+                    } else {
+                        url
+                    }
+                }
+            }
         } catch (t: Throwable) {
             android.util.Log.w("GoogleMapView", "MapLibre JVM init: ${t.message}")
         }
@@ -303,6 +313,8 @@ fun GoogleMapView(
     var selectedCategoryFilter by remember { mutableStateOf("ALL") }
     // Track clicked place POI for floating details card
     var selectedPlaceOnMap by remember { mutableStateOf<RoutePlace?>(null) }
+    // Toggle for accident black-spots visibility
+    var showBlackSpots by remember { mutableStateOf(true) }
 
     // Pulsing transition for live user location dot
     val infiniteTransition = rememberInfiniteTransition(label = "UserPulse")
@@ -488,31 +500,33 @@ fun GoogleMapView(
         map.clear()
 
         // 1. INCIDENT ZONES (Semi-transparent circle polygons with severity colors)
-        incidentZones.forEach { zone ->
-            val circlePoints = createCirclePoints(
-                center = LatLng(zone.latitude, zone.longitude),
-                radiusMeters = zone.radiusMeters.coerceAtLeast(120.0)
-            )
-            val (fillColor, strokeColor) = when {
-                zone.severity >= 4 -> Pair(
-                    android.graphics.Color.argb(70, 239, 68, 68),  // Red
-                    android.graphics.Color.argb(190, 239, 68, 68)
+        if (showBlackSpots) {
+            incidentZones.forEach { zone ->
+                val circlePoints = createCirclePoints(
+                    center = LatLng(zone.latitude, zone.longitude),
+                    radiusMeters = zone.radiusMeters.coerceAtLeast(120.0)
                 )
-                zone.severity >= 3 -> Pair(
-                    android.graphics.Color.argb(60, 245, 158, 11), // Amber
-                    android.graphics.Color.argb(180, 245, 158, 11)
-                )
-                else -> Pair(
-                    android.graphics.Color.argb(50, 234, 179, 8),  // Yellow
-                    android.graphics.Color.argb(170, 234, 179, 8)
+                val (fillColor, strokeColor) = when {
+                    zone.severity >= 4 -> Pair(
+                        android.graphics.Color.argb(70, 239, 68, 68),  // Red
+                        android.graphics.Color.argb(190, 239, 68, 68)
+                    )
+                    zone.severity >= 3 -> Pair(
+                        android.graphics.Color.argb(60, 245, 158, 11), // Amber
+                        android.graphics.Color.argb(180, 245, 158, 11)
+                    )
+                    else -> Pair(
+                        android.graphics.Color.argb(50, 234, 179, 8),  // Yellow
+                        android.graphics.Color.argb(170, 234, 179, 8)
+                    )
+                }
+                map.addPolygon(
+                    PolygonOptions()
+                        .addAll(circlePoints)
+                        .fillColor(fillColor)
+                        .strokeColor(strokeColor)
                 )
             }
-            map.addPolygon(
-                PolygonOptions()
-                    .addAll(circlePoints)
-                    .fillColor(fillColor)
-                    .strokeColor(strokeColor)
-            )
         }
 
         // 2. SOURCE, STOP AND DESTINATION MARKERS (Green 'A', Numbered Blue '1', Red 'B')
@@ -683,7 +697,7 @@ fun GoogleMapView(
     }
 
     // Re-draw overlays and adjust camera whenever routes, selection, location, category filter, or navigation state updates
-    LaunchedEffect(routes, selectedRouteId, incidentZones, groupMembers, userLocation, isNavigating, selectedCategoryFilter, mapLibreMapInstance) {
+    LaunchedEffect(routes, selectedRouteId, incidentZones, groupMembers, userLocation, isNavigating, selectedCategoryFilter, showBlackSpots, mapLibreMapInstance) {
         val map = mapLibreMapInstance ?: return@LaunchedEffect
         updateMapOverlays(map)
         adjustCamera(map, animated = true)
@@ -755,10 +769,17 @@ fun GoogleMapView(
                             }
                         }
 
-                        // Load Geoapify OSM-Bright style (or demotiles if API key missing)
+                        // Load Ola Maps vector style with automatic CartoDB local fallback
+                        addOnDidFailLoadingMapListener { errorMessage ->
+                            android.util.Log.w("GoogleMapView", "Map load failed: $errorMessage. Loading local fallback.")
+                            maplibreMap.setStyle(GeoapifyService.getLocalStyleBuilder(context)) {
+                                updateMapOverlays(maplibreMap)
+                                adjustCamera(maplibreMap, animated = false)
+                            }
+                        }
+
                         coroutineScope.launch {
-                            val styleUrl = GeoapifyService.getStyleUrl()
-                            val styleBuilder = Style.Builder().fromUri(styleUrl)
+                            val styleBuilder = GeoapifyService.getStyleBuilder(context)
 
                             maplibreMap.setStyle(styleBuilder) {
                                 updateMapOverlays(maplibreMap)
@@ -775,37 +796,7 @@ fun GoogleMapView(
             modifier = Modifier.fillMaxSize()
         )
 
-        // API KEY MISSING BANNER CARD (if blank or placeholder)
-        if (isApiKeyMissing) {
-            Card(
-                modifier = Modifier
-                    .align(Alignment.TopCenter)
-                    .padding(top = 16.dp, start = 16.dp, end = 16.dp)
-                    .fillMaxWidth(),
-                shape = RoundedCornerShape(14.dp),
-                colors = CardDefaults.cardColors(containerColor = Color(0xFF1E293B)),
-                elevation = CardDefaults.cardElevation(8.dp)
-            ) {
-                Row(
-                    modifier = Modifier.padding(12.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.Key,
-                        contentDescription = "API Key Warning",
-                        tint = SafetyAmber,
-                        modifier = Modifier.size(20.dp)
-                    )
-                    Spacer(modifier = Modifier.width(10.dp))
-                    Text(
-                        text = "Geoapify API key missing. Add GEOAPIFY_API_KEY to .env",
-                        color = Color.White,
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.SemiBold
-                    )
-                }
-            }
-        }
+
 
         // CATEGORY FILTER CHIPS ROW (Toggles POI markers on map: All, Help, Medical, Fuel, Food, Shops)
         if (showControls && !isNavigating && routes.isNotEmpty()) {
@@ -834,6 +825,33 @@ fun GoogleMapView(
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
+                    // Black-spots toggle chip
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = if (showBlackSpots) SafetyRed.copy(alpha = 0.25f) else Color(0xFF1E293B),
+                        border = BorderStroke(1.dp, if (showBlackSpots) SafetyRed else Color(0xFF334155)),
+                        modifier = Modifier.clickable { showBlackSpots = !showBlackSpots }
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Shield,
+                                contentDescription = null,
+                                tint = if (showBlackSpots) SafetyRed else Color(0xFF94A3B8),
+                                modifier = Modifier.size(12.dp)
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(
+                                text = LanguageManager.get("toggle_blackspots", currentLang),
+                                fontSize = 11.5.sp,
+                                fontWeight = if (showBlackSpots) FontWeight.Bold else FontWeight.Medium,
+                                color = if (showBlackSpots) Color.White else Color(0xFF94A3B8)
+                            )
+                        }
+                    }
+
                     filterItems.forEach { (key, label) ->
                         val isSelected = selectedCategoryFilter == key
                         Surface(
@@ -933,11 +951,12 @@ fun GoogleMapView(
                                             modifier = Modifier.size(16.dp)
                                         )
                                         Spacer(modifier = Modifier.width(6.dp))
+                                        val hasScore = route.safetyDetails.compositeScore > 0 && route.safetyDetails.dataConfidence != com.example.saferoute.data.model.DataConfidence.LOW
                                         Text(
-                                            text = "${route.safetyDetails.tier.title} (${route.safetyDetails.compositeScore}/100)",
+                                            text = if (hasScore) "${route.safetyDetails.tier.title} (${route.safetyDetails.compositeScore}/100)" else "Safety score unavailable",
                                             fontSize = 12.5.sp,
                                             fontWeight = FontWeight.Bold,
-                                            color = tierColor
+                                            color = if (hasScore) tierColor else Color(0xFF94A3B8)
                                         )
                                     }
                                     Text(
@@ -967,7 +986,8 @@ fun GoogleMapView(
                                     Icon(Icons.Default.Lightbulb, contentDescription = null, tint = Color(0xFFFFD166), modifier = Modifier.size(15.dp))
                                     Spacer(modifier = Modifier.height(3.dp))
                                     Text(LanguageManager.get("lighting_metric", currentLang), fontSize = 10.sp, color = Color.Gray)
-                                    Text("${route.safetyDetails.lightingFactor.toInt()}%", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                                    val litText = route.safetyDetails.lightingFactor?.let { "${it.toInt()}%" } ?: "No data"
+                                    Text(litText, fontSize = 12.sp, fontWeight = FontWeight.Bold, color = if (route.safetyDetails.lightingFactor != null) Color.White else Color.Gray)
                                 }
 
                                 Column(
@@ -981,7 +1001,8 @@ fun GoogleMapView(
                                     Icon(Icons.Default.People, contentDescription = null, tint = SafeRouteTeal, modifier = Modifier.size(15.dp))
                                     Spacer(modifier = Modifier.height(3.dp))
                                     Text(LanguageManager.get("crowd_metric", currentLang), fontSize = 10.sp, color = Color.Gray)
-                                    Text("${route.safetyDetails.crowdDensityFactor.toInt()}%", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                                    val crowdText = route.safetyDetails.crowdDensityFactor?.let { "${it.toInt()}%" } ?: "No data"
+                                    Text(crowdText, fontSize = 12.sp, fontWeight = FontWeight.Bold, color = if (route.safetyDetails.crowdDensityFactor != null) Color.White else Color.Gray)
                                 }
 
                                 Column(
@@ -995,7 +1016,8 @@ fun GoogleMapView(
                                     Icon(Icons.Default.Warning, contentDescription = null, tint = SafetyAmber, modifier = Modifier.size(15.dp))
                                     Spacer(modifier = Modifier.height(3.dp))
                                     Text(LanguageManager.get("risk_metric", currentLang), fontSize = 10.sp, color = Color.Gray)
-                                    Text("${route.safetyDetails.incidentHistoryFactor.toInt()}%", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                                    val incText = route.safetyDetails.incidentHistoryFactor?.let { "${it.toInt()}%" } ?: "No data"
+                                    Text(incText, fontSize = 12.sp, fontWeight = FontWeight.Bold, color = if (route.safetyDetails.incidentHistoryFactor != null) Color.White else Color.Gray)
                                 }
                             }
 

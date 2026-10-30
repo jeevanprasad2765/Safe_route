@@ -150,13 +150,66 @@ fun SafetyDetailsDrawer(
                     )
                     Spacer(modifier = Modifier.height(2.dp))
                     Text(
-                        text = "${route.durationMinutes} mins (${route.distanceKm} km) • ${route.summary}",
+                        text = "${route.durationMinutes} mins (${route.distanceKm} km)",
                         fontSize = 13.sp,
                         color = Color(0xFF94A3B8)
                     )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    DataConfidenceBadge(confidence = route.safetyDetails.dataConfidence)
                 }
                 Spacer(modifier = Modifier.width(12.dp))
-                SafetyBadge(score = route.safetyDetails.compositeScore)
+                SafetyBadge(
+                    score = route.safetyDetails.compositeScore,
+                    confidence = route.safetyDetails.dataConfidence
+                )
+            }
+
+            // Warning for route > 25km or leaving Coimbatore bounds
+            route.safetyDetails.reliabilityWarning?.let { warning ->
+                Spacer(modifier = Modifier.height(12.dp))
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(SafetyRed.copy(alpha = 0.15f))
+                        .border(1.dp, SafetyRed.copy(alpha = 0.4f), RoundedCornerShape(12.dp))
+                        .padding(12.dp)
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            imageVector = Icons.Default.Info,
+                            contentDescription = "Warning",
+                            tint = SafetyRed,
+                            modifier = Modifier.size(20.dp)
+                        )
+                        Spacer(modifier = Modifier.width(10.dp))
+                        Text(
+                            text = warning,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = SafetyRed
+                        )
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            // Persistent Note: Estimates disclaimer
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(Color(0xFF1E293B).copy(alpha = 0.7f))
+                    .border(1.dp, GlassSurfaceBorder, RoundedCornerShape(12.dp))
+                    .padding(12.dp)
+            ) {
+                Text(
+                    text = "Estimates based on past accident records and OpenStreetMap. Not a guarantee of safety.",
+                    fontSize = 12.sp,
+                    color = Color(0xFFCBD5E1),
+                    lineHeight = 16.sp
+                )
             }
 
             Spacer(modifier = Modifier.height(16.dp))
@@ -246,8 +299,100 @@ fun SafetyDetailsDrawer(
                 Spacer(modifier = Modifier.height(18.dp))
             }
 
+            // ROAD-ACCIDENT RISK SECTION
             Text(
-                text = "Safety Factor Breakdown",
+                text = "Road-Accident Risk",
+                fontSize = 15.sp,
+                fontWeight = FontWeight.Bold,
+                color = Color.White
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+
+            val roadRisk = route.roadRiskDetails
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(16.dp))
+                    .background(DarkNavyCard)
+                    .border(1.dp, GlassSurfaceBorder, RoundedCornerShape(16.dp))
+                    .padding(14.dp)
+            ) {
+                if (roadRisk != null && roadRisk.isAvailable) {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = "Accident Likelihood",
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = Color.White
+                            )
+                            Surface(
+                                shape = RoundedCornerShape(8.dp),
+                                color = roadRisk.roadRiskLevel.color.copy(alpha = 0.2f),
+                                border = androidx.compose.foundation.BorderStroke(1.dp, roadRisk.roadRiskLevel.color.copy(alpha = 0.5f))
+                            ) {
+                                Text(
+                                    text = roadRisk.roadRiskLevel.label,
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = roadRisk.roadRiskLevel.color,
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
+                                )
+                            }
+                        }
+
+                        if (roadRisk.topReasons.isNotEmpty()) {
+                            Text(
+                                text = "Key factors: " + roadRisk.topReasons.joinToString(" • "),
+                                fontSize = 12.sp,
+                                color = Color(0xFFCBD5E1),
+                                lineHeight = 16.sp
+                            )
+                        }
+
+                        if (roadRisk.blackSpotsCount > 0) {
+                            Text(
+                                text = "${roadRisk.blackSpotsCount} known accident black-spot(s) within 100m of route",
+                                fontSize = 11.sp,
+                                color = SafetyAmber
+                            )
+                        }
+
+                        if (roadRisk.hourlyWeightAssumption != null) {
+                            Text(
+                                text = roadRisk.hourlyWeightAssumption,
+                                fontSize = 11.sp,
+                                color = Color(0xFF94A3B8)
+                            )
+                        }
+                    }
+                } else {
+                    Column {
+                        Text(
+                            text = "Predicted risk unavailable - not enough accident data",
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = Color(0xFF94A3B8)
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = "Requires at least 100 verified accident black-spot records to train the road-accident risk model.",
+                            fontSize = 11.sp,
+                            color = Color(0xFF64748B)
+                        )
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(18.dp))
+
+            // PERSONAL SAFETY (NIGHT) SECTION
+            Text(
+                text = "Personal Safety (Night) Factors",
                 fontSize = 15.sp,
                 fontWeight = FontWeight.Bold,
                 color = Color.White
@@ -264,49 +409,58 @@ fun SafetyDetailsDrawer(
                     .padding(16.dp)
             ) {
                 Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
-                    // Progress Bar 1: Lighting
+                    // Factor 1: Lighting
                     FactorProgressItem(
                         icon = Icons.Default.Lightbulb,
                         iconTint = Color(0xFFFFD166),
-                        title = "Street Lighting & Main Roads",
-                        score = route.safetyDetails.lightingFactor.toInt(),
-                        explanation = if (route.safetyDetails.lightingFactor >= 80) "Bright municipal streetlamps active along 95% of route" else "Unlit side streets detected on secondary leg"
+                        title = "Street Lighting Coverage",
+                        score = route.safetyDetails.lightingFactor?.toInt(),
+                        explanation = route.safetyDetails.lightingFactText.ifBlank { "Lighting data unavailable for most of this route" }
                     )
 
-                    // Progress Bar 2: Crowd Density
+                    // Factor 2: Road Characteristics & Geometry
                     FactorProgressItem(
-                        icon = Icons.Default.Group,
+                        icon = Icons.Default.Navigation,
                         iconTint = SafeRouteTeal,
-                        title = "Pedestrian Foot Traffic",
-                        score = route.safetyDetails.crowdDensityFactor.toInt(),
-                        explanation = if (route.safetyDetails.crowdDensityFactor >= 70) "High active foot traffic and open storefronts" else "Quiet residential corridor with sparse pedestrians"
+                        title = "Road Type & Geometry",
+                        score = null,
+                        explanation = route.safetyDetails.roadTypeFactText.ifBlank { "Road geometry: Standard mapped segments" }
                     )
 
-                    // Progress Bar 3: Incident History
+                    // Factor 3: Pedestrian Activity & Open Shops
+                    FactorProgressItem(
+                        icon = Icons.Default.Store,
+                        iconTint = Color(0xFF38BDF8),
+                        title = "Nearby Activity & Open Shops (150m)",
+                        score = route.safetyDetails.crowdDensityFactor?.toInt(),
+                        explanation = route.safetyDetails.activityFactText.ifBlank { "No nearby activity data available" }
+                    )
+
+                    // Factor 4: Black-Spots & Incidents
                     FactorProgressItem(
                         icon = Icons.Default.Shield,
                         iconTint = SafetyGreen,
-                        title = "Incident-Free Zone History",
-                        score = route.safetyDetails.incidentHistoryFactor.toInt(),
-                        explanation = if (route.safetyDetails.incidentHistoryFactor >= 80) "Zero recent safety incidents reported in this zone" else "1-2 low-severity incidents reported in nearby alley"
+                        title = "Accident Black-Spots & Hazards",
+                        score = route.safetyDetails.incidentHistoryFactor?.toInt(),
+                        explanation = route.safetyDetails.incidentFactText.ifBlank { "No incident data for this area" }
                     )
 
-                    // Progress Bar 4: Help Point Coverage
+                    // Factor 5: Emergency Help Coverage
                     FactorProgressItem(
                         icon = Icons.Default.LocalHospital,
                         iconTint = Color(0xFF10B981),
                         title = "Help Point & Emergency Coverage",
-                        score = route.safetyDetails.helpCoverageFactor.toInt(),
-                        explanation = "Proximity to police, hospitals, pharmacies and open fuel stations"
+                        score = route.safetyDetails.helpCoverageFactor?.toInt(),
+                        explanation = "Proximity to police stations, hospitals, pharmacies and fuel stations"
                     )
 
-                    // Progress Bar 5: Time of Day Factor
+                    // Factor 6: Time of Day
                     FactorProgressItem(
                         icon = Icons.Default.WbSunny,
                         iconTint = SafetyAmber,
                         title = "Time-of-Day Multiplier",
                         score = route.safetyDetails.timeOfDayFactor.toInt(),
-                        explanation = "Calculated based on current dusk/night visibility conditions"
+                        explanation = "Calculated based on current visibility conditions"
                     )
                 }
             }
@@ -514,17 +668,20 @@ fun FactorProgressItem(
     icon: ImageVector,
     iconTint: Color,
     title: String,
-    score: Int,
+    score: Int?,
     explanation: String
 ) {
+    val hasData = score != null
+
     val progressColor = when {
+        !hasData -> Color(0xFF64748B) // Grey
         score >= 80 -> SafetyGreen
         score >= 60 -> SafetyAmber
         else -> SafetyRed
     }
 
     val animatedProgress by animateFloatAsState(
-        targetValue = score / 100f,
+        targetValue = if (hasData) (score!! / 100f) else 0f,
         animationSpec = tween(600),
         label = "FactorProgress"
     )
@@ -539,7 +696,7 @@ fun FactorProgressItem(
                 Icon(
                     imageVector = icon,
                     contentDescription = null,
-                    tint = iconTint,
+                    tint = if (hasData) iconTint else Color(0xFF64748B),
                     modifier = Modifier.size(16.dp)
                 )
                 Spacer(modifier = Modifier.width(8.dp))
@@ -547,32 +704,42 @@ fun FactorProgressItem(
                     text = title,
                     fontSize = 13.sp,
                     fontWeight = FontWeight.SemiBold,
-                    color = Color.White
+                    color = if (hasData) Color.White else Color(0xFF94A3B8)
                 )
             }
             Text(
-                text = "$score%",
+                text = if (hasData) "$score%" else "No data available",
                 fontSize = 12.sp,
-                fontWeight = FontWeight.Bold,
+                fontWeight = if (hasData) FontWeight.Bold else FontWeight.Normal,
                 color = progressColor
             )
         }
 
         Spacer(modifier = Modifier.height(6.dp))
 
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(6.dp)
-                .clip(RoundedCornerShape(3.dp))
-                .background(Color(0x22FFFFFF))
-        ) {
+        if (hasData) {
             Box(
                 modifier = Modifier
-                    .fillMaxWidth(animatedProgress)
+                    .fillMaxWidth()
                     .height(6.dp)
                     .clip(RoundedCornerShape(3.dp))
-                    .background(progressColor)
+                    .background(Color(0x22FFFFFF))
+            ) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth(animatedProgress)
+                        .height(6.dp)
+                        .clip(RoundedCornerShape(3.dp))
+                        .background(progressColor)
+                )
+            }
+        } else {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(4.dp)
+                    .clip(RoundedCornerShape(2.dp))
+                    .background(Color(0xFF334155))
             )
         }
 
@@ -581,7 +748,7 @@ fun FactorProgressItem(
         Text(
             text = explanation,
             fontSize = 11.sp,
-            color = Color(0xFF94A3B8)
+            color = if (hasData) Color(0xFF94A3B8) else Color(0xFF64748B)
         )
     }
 }

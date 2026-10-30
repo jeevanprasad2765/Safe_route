@@ -100,7 +100,7 @@ fun ProfileScreen(
     onLogout: () -> Unit
 ) {
     var showAddContactDialog by remember { mutableStateOf(false) }
-    var showPaywallDialog by remember { mutableStateOf(false) }
+    // var showPaywallDialog by remember { mutableStateOf(false) } // removed
     var showTransparencyModal by remember { mutableStateOf(false) }
     var showFirebaseConfigDialog by remember { mutableStateOf(false) }
 
@@ -200,43 +200,8 @@ fun ProfileScreen(
 
         Spacer(modifier = Modifier.height(16.dp))
 
-        // SAFEROUTE PLUS MONETIZATION UPGRADE CARD
-        if (!userProfile.isPlusMember) {
-            Box(
-                modifier = Modifier
-                    .testTag("plus_upgrade_card")
-                    .fillMaxWidth()
-                    .bounceClick(scaleDown = 0.97f) { showPaywallDialog = true }
-                    .clip(RoundedCornerShape(20.dp))
-                    .background(
-                        Brush.horizontalGradient(
-                            colors = listOf(DarkNavyCard, Color(0xFF1E293B))
-                        )
-                    )
-                    .border(1.dp, Color(0xFFFFD166).copy(alpha = 0.4f), RoundedCornerShape(20.dp))
-                    .padding(16.dp)
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Box(
-                        modifier = Modifier
-                            .size(42.dp)
-                            .clip(CircleShape)
-                            .background(Color(0xFFFFD166).copy(alpha = 0.15f)),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Icon(Icons.Default.Star, contentDescription = null, tint = Color(0xFFFFD166), modifier = Modifier.size(24.dp))
-                    }
-                    Spacer(modifier = Modifier.width(12.dp))
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text("Upgrade to SafeRoute Plus", fontWeight = FontWeight.Bold, color = Color.White, fontSize = 14.sp)
-                        Text("Live GPS sharing & historical safety heatmaps.", fontSize = 11.sp, color = Color(0xFF94A3B8))
-                    }
-                    Icon(Icons.Default.ChevronRight, contentDescription = null, tint = Color(0xFF94A3B8))
-                }
-            }
-
-            Spacer(modifier = Modifier.height(16.dp))
-        }
+        // [PLUS UPGRADE CARD REMOVED]
+        // Plus upgrade UI removed
 
         // FIREBASE CLOUD SYNC & STATUS CARD
         Text("Firebase Cloud Sync", fontSize = 16.sp, fontWeight = FontWeight.Bold, color = Color.White)
@@ -854,58 +819,7 @@ fun ProfileScreen(
         }
     }
 
-    // SAFEROUTE PLUS PAYWALL MODAL
-    if (showPaywallDialog) {
-        Dialog(onDismissRequest = { showPaywallDialog = false }) {
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(24.dp))
-                    .background(DarkNavyCard)
-                    .border(1.dp, Color(0xFFFFD166).copy(alpha = 0.4f), RoundedCornerShape(24.dp))
-                    .padding(24.dp)
-            ) {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Icon(Icons.Default.Star, contentDescription = null, tint = Color(0xFFFFD166), modifier = Modifier.size(48.dp))
-                    Spacer(modifier = Modifier.height(12.dp))
-                    Text("SafeRoute Plus", fontSize = 22.sp, fontWeight = FontWeight.Black, color = Color.White)
-                    Text("Unlock Premium Peace-of-Mind Features", fontSize = 12.sp, color = Color(0xFF94A3B8))
 
-                    Spacer(modifier = Modifier.height(16.dp))
-
-                    listOf(
-                        "Unlimited Emergency Contacts Sync",
-                        "Live Real-Time GPS Contact Tracking",
-                        "Historical Incident Heatmap Overlays",
-                        "Priority Re-routing after Dusk"
-                    ).forEach { feat ->
-                        Row(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                            Icon(Icons.Default.Shield, contentDescription = null, tint = SafeRouteTeal, modifier = Modifier.size(16.dp))
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text(feat, fontSize = 12.sp, color = Color.White)
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.height(20.dp))
-
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(48.dp)
-                            .bounceClick(scaleDown = 0.95f) {
-                                onTogglePlus(true)
-                                showPaywallDialog = false
-                            }
-                            .clip(RoundedCornerShape(14.dp))
-                            .background(Color(0xFFFFD166)),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text("TRY SAFEROUTE PLUS", fontWeight = FontWeight.Bold, color = Color.Black, fontSize = 13.sp)
-                    }
-                }
-            }
-        }
-    }
 
     // HOW SCORING WORKS TRANSPARENCY MODAL
     if (showTransparencyModal) {
@@ -922,12 +836,13 @@ fun ProfileScreen(
                     Text("How Scoring Works", fontSize = 18.sp, fontWeight = FontWeight.Bold, color = Color.White)
                     Spacer(modifier = Modifier.height(10.dp))
                     Text(
-                        "SafeRoute's composite score combines 4 factors:\n" +
-                                "• Lighting (35%): Municipal streetlamps & main road width\n" +
-                                "• Crowd Density (25%): Active storefronts & pedestrians\n" +
-                                "• Incident Proximity (25%): 30-day historical safety reports\n" +
-                                "• Time of Day (15%): Dusk/night visibility multiplier\n\n" +
-                                "Scores range from 0-100: Green (80+ Safe), Amber (60-79 Moderate), Red (<60 Caution).",
+                        "SafeRoute's safety factors are derived from real OpenStreetMap data and documented hazard sources:\n" +
+                                "• Lighting (35%): Verified OSM lit tags on mapped road segments\n" +
+                                "• Activity & Shops (25%): Real open businesses & density within 150m\n" +
+                                "• Incident Proximity (20%): Official traffic police accident black-spots & verified user reports\n" +
+                                "• Help Point Coverage (20%): Proximity to hospitals, police and pharmacies\n" +
+                                "• Time of Day: Real-time visibility conditions multiplier\n\n" +
+                                "Data confidence badges (Low/Medium/High) reflect coverage. When data is insufficient, scores are withheld.",
                         fontSize = 12.sp,
                         color = Color(0xFF94A3B8),
                         lineHeight = 18.sp

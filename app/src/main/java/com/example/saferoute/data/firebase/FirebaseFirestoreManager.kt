@@ -217,4 +217,15 @@ object FirebaseFirestoreManager {
             false
         }
     }
+
+    suspend fun fetchUserHazards(): List<Map<String, Any>> {
+        return try {
+            val db = firestore ?: return emptyList()
+            val snapshot = db.collection("hazards").get().await()
+            snapshot.documents.mapNotNull { it.data }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to fetch hazards from Firestore: ${e.message}")
+            emptyList()
+        }
+    }
 }

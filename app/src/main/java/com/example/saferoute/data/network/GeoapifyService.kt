@@ -22,6 +22,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import org.maplibre.android.maps.Style
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.IOException
@@ -61,6 +62,32 @@ object GeoapifyService {
     private const val COIMBATORE_LAT = 11.0168
     private const val COIMBATORE_LNG = 76.9558
 
+    val COIMBATORE_LANDMARKS = listOf(
+        SearchResult("TIDEL Park, Coimbatore", "TIDEL Park", 11.0280, 77.0050, "business", "cbe_tidel"),
+        SearchResult("Peelamedu, Coimbatore", "Peelamedu", 11.0250, 77.0080, "suburb", "cbe_peelamedu"),
+        SearchResult("PSG Tech, Peelamedu, Coimbatore", "PSG Tech", 11.0245, 77.0028, "education", "cbe_psg"),
+        SearchResult("Gandhipuram, Coimbatore", "Gandhipuram", 11.0168, 76.9670, "commercial", "cbe_gandhipuram"),
+        SearchResult("RS Puram, Coimbatore", "RS Puram", 11.0089, 76.9507, "suburb", "cbe_rspuram"),
+        SearchResult("Coimbatore Junction Railway Station", "Railway Station", 10.9990, 76.9630, "station", "cbe_junction"),
+        SearchResult("Sitra, Coimbatore", "Sitra", 11.0330, 77.0380, "suburb", "cbe_sitra"),
+        SearchResult("Coimbatore International Airport", "Airport", 11.0300, 77.0434, "airport", "cbe_airport"),
+        SearchResult("Singanallur, Coimbatore", "Singanallur", 10.9970, 77.0180, "suburb", "cbe_singanallur"),
+        SearchResult("Saravanampatti, Coimbatore", "Saravanampatti", 11.0780, 76.9980, "suburb", "cbe_saravanampatti"),
+        SearchResult("Town Hall, Coimbatore", "Town Hall", 10.9925, 76.9610, "heritage", "cbe_townhall"),
+        SearchResult("Ukkadam, Coimbatore", "Ukkadam", 10.9880, 76.9580, "transport", "cbe_ukkadam"),
+        SearchResult("Hope College, Coimbatore", "Hope College", 11.0270, 77.0200, "landmark", "cbe_hopecollege"),
+        SearchResult("Lakshmi Mills, Coimbatore", "Lakshmi Mills", 11.0185, 76.9820, "landmark", "cbe_lakshmi"),
+        SearchResult("Nava India, Coimbatore", "Nava India", 11.0210, 76.9910, "education", "cbe_navaindia"),
+        SearchResult("DB Road, RS Puram, Coimbatore", "DB Road", 11.0110, 76.9510, "shopping", "cbe_dbroad"),
+        SearchResult("Brookefields Mall, Coimbatore", "Brookefields Mall", 11.0135, 76.9575, "mall", "cbe_brookefields"),
+        SearchResult("Fun Republic Mall, Peelamedu, Coimbatore", "Fun Republic Mall", 11.0245, 77.0025, "mall", "cbe_funrepublic"),
+        SearchResult("Prozone Mall, Saravanampatti, Coimbatore", "Prozone Mall", 11.0545, 76.9920, "mall", "cbe_prozone"),
+        SearchResult("Eachanari, Coimbatore", "Eachanari", 10.9320, 76.9720, "suburb", "cbe_eachanari"),
+        SearchResult("Vadavalli, Coimbatore", "Vadavalli", 11.0230, 76.9020, "suburb", "cbe_vadavalli"),
+        SearchResult("Marudhamalai, Coimbatore", "Marudhamalai", 11.0450, 76.8520, "temple", "cbe_marudhamalai"),
+        SearchResult("Coimbatore, Tamil Nadu", "Coimbatore", 11.0168, 76.9558, "city", "cbe_city")
+    )
+
     private val client = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
         .readTimeout(20, TimeUnit.SECONDS)
@@ -84,17 +111,57 @@ object GeoapifyService {
         }
     }
 
-    fun isApiKeyConfigured(): Boolean {
+    fun getOlaMapsApiKey(): String {
+        return try {
+            BuildConfig.OLA_MAPS_API_KEY.trim()
+        } catch (_: Throwable) {
+            ""
+        }
+    }
+
+    fun isOlaMapsConfigured(): Boolean {
+        val key = getOlaMapsApiKey()
+        return key.isNotBlank() && !key.startsWith("YOUR_")
+    }
+
+    fun isGeoapifyConfigured(): Boolean {
         val key = getApiKey()
         return key.isNotBlank() && !key.startsWith("YOUR_")
     }
 
+    fun isApiKeyConfigured(): Boolean {
+        return isOlaMapsConfigured() || isGeoapifyConfigured()
+    }
+
     fun getStyleUrl(): String {
+        if (isOlaMapsConfigured()) {
+            return "https://api.olamaps.io/tiles/vector/v1/styles/default-light-standard/style.json?api_key=${getOlaMapsApiKey()}"
+        }
         val key = getApiKey()
-        return if (isApiKeyConfigured()) {
+        return if (isGeoapifyConfigured()) {
             "$MAPS_STYLE_URL?apiKey=$key"
         } else {
-            "https://demotiles.maplibre.org/style.json"
+            "asset://map_style_dark.json"
+        }
+    }
+
+    fun getLocalStyleBuilder(context: Context): Style.Builder {
+        val json = try {
+            context.assets.open("map_style_dark.json").bufferedReader().use { it.readText() }
+        } catch (e: Exception) {
+            """{"version":8,"name":"CartoDark","sources":{"carto-dark":{"type":"raster","tiles":["https://a.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png","https://b.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png"],"tileSize":256}},"layers":[{"id":"carto-dark-layer","type":"raster","source":"carto-dark","minzoom":0,"maxzoom":20}]}"""
+        }
+        return Style.Builder().fromJson(json)
+    }
+
+    fun getStyleBuilder(context: Context): Style.Builder {
+        if (isOlaMapsConfigured()) {
+            return Style.Builder().fromUri(getStyleUrl())
+        }
+        return if (isGeoapifyConfigured()) {
+            Style.Builder().fromUri(getStyleUrl())
+        } else {
+            getLocalStyleBuilder(context)
         }
     }
 
@@ -117,9 +184,56 @@ object GeoapifyService {
             autocompleteCache[cacheKey]?.let { return@withContext it }
         }
 
-        if (!isApiKeyConfigured()) {
-            _lastErrorMessage.value = "Geoapify API key missing. Add GEOAPIFY_API_KEY to .env"
-            return@withContext emptyList()
+        if (isOlaMapsConfigured()) {
+            val olaKey = getOlaMapsApiKey()
+            val encodedQuery = URLEncoder.encode(q, "UTF-8")
+            val url = "https://api.olamaps.io/places/v1/autocomplete?input=$encodedQuery&api_key=$olaKey"
+            try {
+                val request = Request.Builder()
+                    .url(url)
+                    .header("Accept", "application/json")
+                    .header("X-Request-Id", java.util.UUID.randomUUID().toString())
+                    .build()
+                val response = client.newCall(request).execute()
+                if (response.isSuccessful) {
+                    val body = response.body?.string().orEmpty()
+                    val root = JSONObject(body)
+                    val predictions = root.optJSONArray("predictions") ?: JSONArray()
+                    val results = mutableListOf<SearchResult>()
+                    for (i in 0 until predictions.length()) {
+                        val item = predictions.getJSONObject(i)
+                        val desc = item.optString("description", "")
+                        val struct = item.optJSONObject("structured_formatting")
+                        val mainText = struct?.optString("main_text", desc)?.ifBlank { desc } ?: desc
+                        val geom = item.optJSONObject("geometry")
+                        val loc = geom?.optJSONObject("location")
+                        val lat = loc?.optDouble("lat") ?: 0.0
+                        val lng = loc?.optDouble("lng") ?: 0.0
+                        val placeId = item.optString("place_id", "ola_$i")
+                        if (lat != 0.0 && lng != 0.0) {
+                            results.add(SearchResult(desc, mainText, lat, lng, "place", placeId))
+                        }
+                    }
+                    if (results.isNotEmpty()) {
+                        synchronized(autocompleteCache) {
+                            autocompleteCache[cacheKey] = results
+                        }
+                        clearError()
+                        return@withContext results
+                    }
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Ola autocomplete query failed: ${e.message}")
+            }
+        }
+
+        if (!isGeoapifyConfigured()) {
+            val fallbackMatches = COIMBATORE_LANDMARKS.filter {
+                it.displayName.contains(q, ignoreCase = true) || it.shortName.contains(q, ignoreCase = true)
+            }.ifEmpty {
+                listOf(SearchResult("$q, Coimbatore", q, COIMBATORE_LAT, COIMBATORE_LNG, "place", "cbe_custom"))
+            }
+            return@withContext fallbackMatches
         }
 
         val biasLat = userLocation?.first ?: COIMBATORE_LAT
@@ -199,9 +313,56 @@ object GeoapifyService {
             }
         }
 
-        if (!isApiKeyConfigured()) {
-            _lastErrorMessage.value = "Geoapify API key missing. Add GEOAPIFY_API_KEY to .env"
-            return@withContext null
+        val landmark = COIMBATORE_LANDMARKS.find {
+            it.shortName.equals(q, ignoreCase = true) ||
+            it.displayName.contains(q, ignoreCase = true) ||
+            q.contains(it.shortName, ignoreCase = true)
+        }
+        if (landmark != null) {
+            synchronized(geocodeCache) { geocodeCache[cacheKey] = landmark }
+            return@withContext landmark
+        }
+
+        if (isOlaMapsConfigured()) {
+            val olaKey = getOlaMapsApiKey()
+            val encodedQuery = URLEncoder.encode("$q, Coimbatore", "UTF-8")
+            val url = "https://api.olamaps.io/places/v1/geocode?address=$encodedQuery&api_key=$olaKey"
+            try {
+                val request = Request.Builder()
+                    .url(url)
+                    .header("Accept", "application/json")
+                    .header("X-Request-Id", java.util.UUID.randomUUID().toString())
+                    .build()
+                val response = client.newCall(request).execute()
+                if (response.isSuccessful) {
+                    val body = response.body?.string().orEmpty()
+                    val root = JSONObject(body)
+                    val results = root.optJSONArray("geocodingResults") ?: JSONArray()
+                    if (results.length() > 0) {
+                        val item = results.getJSONObject(0)
+                        val formatted = item.optString("formatted_address", q)
+                        val name = item.optString("name", q)
+                        val geom = item.optJSONObject("geometry")
+                        val loc = geom?.optJSONObject("location")
+                        val lat = loc?.optDouble("lat")
+                        val lng = loc?.optDouble("lng")
+                        val placeId = item.optString("place_id")
+                        if (lat != null && lng != null) {
+                            val result = SearchResult(formatted, name, lat, lng, "place", placeId)
+                            synchronized(geocodeCache) { geocodeCache[cacheKey] = result }
+                            clearError()
+                            return@withContext result
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Ola geocode failed: ${e.message}")
+            }
+        }
+
+        if (!isGeoapifyConfigured()) {
+            val custom = SearchResult("$q, Coimbatore", q, COIMBATORE_LAT, COIMBATORE_LNG, "place", "cbe_custom")
+            return@withContext custom
         }
 
         val apiKey = getApiKey()
@@ -265,7 +426,48 @@ object GeoapifyService {
             reverseGeocodeCache[cacheKey]?.let { return@withContext it }
         }
 
-        if (!isApiKeyConfigured()) {
+        if (isOlaMapsConfigured()) {
+            val olaKey = getOlaMapsApiKey()
+            val url = "https://api.olamaps.io/places/v1/reverse-geocode?latlng=$lat,$lng&api_key=$olaKey"
+            try {
+                val request = Request.Builder()
+                    .url(url)
+                    .header("Accept", "application/json")
+                    .header("X-Request-Id", java.util.UUID.randomUUID().toString())
+                    .build()
+                val response = client.newCall(request).execute()
+                if (response.isSuccessful) {
+                    val body = response.body?.string().orEmpty()
+                    val root = JSONObject(body)
+                    val results = root.optJSONArray("results") ?: JSONArray()
+                    if (results.length() > 0) {
+                        val item = results.getJSONObject(0)
+                        val components = item.optJSONArray("address_components")
+                        var localityName: String? = null
+                        if (components != null) {
+                            for (i in 0 until components.length()) {
+                                val c = components.getJSONObject(i)
+                                val types = c.optJSONArray("types") ?: JSONArray()
+                                val typeList = (0 until types.length()).map { types.getString(it) }
+                                if (typeList.contains("sublocality")) {
+                                    localityName = c.optString("long_name")
+                                    break
+                                } else if (typeList.contains("locality") && localityName == null) {
+                                    localityName = c.optString("long_name")
+                                }
+                            }
+                        }
+                        val finalLocality = localityName ?: item.optString("name", "Coimbatore")
+                        synchronized(reverseGeocodeCache) { reverseGeocodeCache[cacheKey] = finalLocality }
+                        return@withContext finalLocality
+                    }
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Ola reverse geocode failed: ${e.message}")
+            }
+        }
+
+        if (!isGeoapifyConfigured()) {
             return@withContext "Coimbatore"
         }
 
@@ -322,72 +524,102 @@ object GeoapifyService {
         }
 
         if (!isApiKeyConfigured()) {
-            _lastErrorMessage.value = "Geoapify API key missing. Add GEOAPIFY_API_KEY to .env"
+            _lastErrorMessage.value = LanguageManager.get("ola_maps_key_missing")
             return@withContext emptyList()
         }
 
-        val apiKey = getApiKey()
         val intermediatePoints = if (waypoints.size > 2) waypoints.subList(1, waypoints.size - 1) else emptyList()
-
-        val waypointsParam = buildString {
-            append("${sourceCoord.first},${sourceCoord.second}")
-            for (p in intermediatePoints) {
-                append("|${p.first},${p.second}")
-            }
-            append("|${destCoord.first},${destCoord.second}")
-        }
-
         val corridorRepo = CorridorPlacesRepository.getInstance(context)
+        val distinctRoutes = mutableListOf<ParsedGeoapifyRoute>()
 
-        // Generate routes with different routing strategies: balanced, short, less_maneuvers
-        val routingTypes = listOf("balanced", "short", "less_maneuvers")
-        val rawCandidates = mutableListOf<ParsedGeoapifyRoute>()
-
-        for (rType in routingTypes) {
-            val url = "$BASE_URL/v1/routing?waypoints=$waypointsParam&mode=drive&type=$rType&apiKey=$apiKey"
+        // 1. Try Ola Maps Directions API first if configured
+        if (isOlaMapsConfigured()) {
+            val olaKey = getOlaMapsApiKey()
+            val olaUrl = "https://api.olamaps.io/routing/v1/directions?origin=${sourceCoord.first},${sourceCoord.second}&destination=${destCoord.first},${destCoord.second}&alternatives=true&api_key=$olaKey"
             try {
                 val request = Request.Builder()
-                    .url(url)
+                    .url(olaUrl)
+                    .post(okhttp3.RequestBody.create(null, ByteArray(0)))
                     .header("Accept", "application/json")
+                    .header("X-Request-Id", java.util.UUID.randomUUID().toString())
                     .build()
 
                 val response = client.newCall(request).execute()
                 if (response.isSuccessful) {
                     val body = response.body?.string().orEmpty()
-                    val parsed = parseGeoapifyRoutingJson(body, rType)
-                    if (parsed != null && parsed.coordinates.isNotEmpty()) {
-                        rawCandidates.add(parsed)
+                    val olaParsed = parseOlaRoutingJson(body)
+                    if (olaParsed.isNotEmpty()) {
+                        distinctRoutes.addAll(olaParsed)
                     }
+                } else {
+                    handleHttpError(response.code, response.message)
                 }
             } catch (e: Exception) {
-                Log.w(TAG, "Routing type $rType query failed: ${e.message}")
+                Log.w(TAG, "Ola directions request failed: ${e.message}")
             }
         }
 
-        // Deduplicate near-identical geometries
-        val distinctRoutes = deduplicateRoutes(rawCandidates)
-
-        // If fewer than 2 distinct routes, apply the "via" waypoint trick to guarantee a genuine alternative
-        if (distinctRoutes.size < 2 && intermediatePoints.isEmpty()) {
-            val midLat = (sourceCoord.first + destCoord.first) / 2.0
-            val midLng = (sourceCoord.second + destCoord.second) / 2.0
-            // Offset perpendicular to the main vector
-            val offsetLat = midLat + 0.012
-            val offsetLng = midLng - 0.012
-
-            val viaWaypoints = "${sourceCoord.first},${sourceCoord.second}|$offsetLat,$offsetLng|${destCoord.first},${destCoord.second}"
-            val viaUrl = "$BASE_URL/v1/routing?waypoints=$viaWaypoints&mode=drive&type=balanced&apiKey=$apiKey"
-            try {
-                val req = Request.Builder().url(viaUrl).build()
-                val resp = client.newCall(req).execute()
-                if (resp.isSuccessful) {
-                    val parsed = parseGeoapifyRoutingJson(resp.body?.string().orEmpty(), "alternative_via")
-                    if (parsed != null && isGeometricallyDistinct(parsed.coordinates, distinctRoutes)) {
-                        distinctRoutes.add(parsed)
-                    }
+        // 2. Fall back to Geoapify Routing API if Ola Maps had no routes and Geoapify is configured
+        if (distinctRoutes.isEmpty() && isGeoapifyConfigured()) {
+            val apiKey = getApiKey()
+            val waypointsParam = buildString {
+                append("${sourceCoord.first},${sourceCoord.second}")
+                for (p in intermediatePoints) {
+                    append("|${p.first},${p.second}")
                 }
-            } catch (e: Exception) {
-                Log.w(TAG, "Via route alternative failed: ${e.message}")
+                append("|${destCoord.first},${destCoord.second}")
+            }
+
+            // Generate routes with different routing strategies: balanced, short, less_maneuvers
+            val routingTypes = listOf("balanced", "short", "less_maneuvers")
+            val rawCandidates = mutableListOf<ParsedGeoapifyRoute>()
+
+            for (rType in routingTypes) {
+                val url = "$BASE_URL/v1/routing?waypoints=$waypointsParam&mode=drive&type=$rType&apiKey=$apiKey"
+                try {
+                    val request = Request.Builder()
+                        .url(url)
+                        .header("Accept", "application/json")
+                        .build()
+
+                    val response = client.newCall(request).execute()
+                    if (response.isSuccessful) {
+                        val body = response.body?.string().orEmpty()
+                        val parsed = parseGeoapifyRoutingJson(body, rType)
+                        if (parsed != null && parsed.coordinates.isNotEmpty()) {
+                            rawCandidates.add(parsed)
+                        }
+                    }
+                } catch (e: Exception) {
+                    Log.w(TAG, "Routing type $rType query failed: ${e.message}")
+                }
+            }
+
+            // Deduplicate near-identical geometries
+            val geoapifyDistinct = deduplicateRoutes(rawCandidates)
+            distinctRoutes.addAll(geoapifyDistinct)
+
+            // If fewer than 2 distinct routes, apply the "via" waypoint trick to guarantee a genuine alternative
+            if (distinctRoutes.size < 2 && intermediatePoints.isEmpty()) {
+                val midLat = (sourceCoord.first + destCoord.first) / 2.0
+                val midLng = (sourceCoord.second + destCoord.second) / 2.0
+                val offsetLat = midLat + 0.012
+                val offsetLng = midLng - 0.012
+
+                val viaWaypoints = "${sourceCoord.first},${sourceCoord.second}|$offsetLat,$offsetLng|${destCoord.first},${destCoord.second}"
+                val viaUrl = "$BASE_URL/v1/routing?waypoints=$viaWaypoints&mode=drive&type=balanced&apiKey=$apiKey"
+                try {
+                    val req = Request.Builder().url(viaUrl).build()
+                    val resp = client.newCall(req).execute()
+                    if (resp.isSuccessful) {
+                        val parsed = parseGeoapifyRoutingJson(resp.body?.string().orEmpty(), "alternative_via")
+                        if (parsed != null && isGeometricallyDistinct(parsed.coordinates, distinctRoutes)) {
+                            distinctRoutes.add(parsed)
+                        }
+                    }
+                } catch (e: Exception) {
+                    Log.w(TAG, "Via route alternative failed: ${e.message}")
+                }
             }
         }
 
@@ -443,22 +675,13 @@ object GeoapifyService {
             }
 
             val routeTitle = when (i) {
-                0 -> "via $prominentRoad (Safe Corridor)"
-                1 -> "via $prominentRoad (Commercial Link)"
-                else -> "via $prominentRoad (Local Shortcut)"
+                0 -> "via $prominentRoad (Primary Route)"
+                1 -> "via $prominentRoad (Alternative 1)"
+                else -> "via $prominentRoad (Alternative $i)"
             }
 
-            val summaryText = when (i) {
-                0 -> "Well-lit arterial route with active municipal lighting & high business presence"
-                1 -> "Direct transit avenue with regular vehicular movement and open retail"
-                else -> "Local connector route; lower foot traffic after dusk"
-            }
-
-            val warningNote = when (i) {
-                0 -> "Optimal streetlamp coverage & active CCTV monitoring"
-                1 -> "Moderate lighting on connector sections; active retail presence"
-                else -> "Exercise caution after dusk: dimmer lighting and narrow road segments"
-            }
+            val summaryText = "Route via $prominentRoad (${distKm} km, ${durMins} mins)"
+            val warningNote = safetyDetails.reliabilityWarning ?: ""
 
             val segments = createVisualSegments(coords, corridor, routeTitle)
             val legs = buildLegs(allWaypoints, distKm, durMins, safetyDetails.compositeScore)
@@ -501,6 +724,120 @@ object GeoapifyService {
         val coordinates: List<Pair<Double, Double>>,
         val instructions: List<TurnInstruction>
     )
+
+    fun decodePolyline(encoded: String): List<Pair<Double, Double>> {
+        val poly = ArrayList<Pair<Double, Double>>()
+        var index = 0
+        val len = encoded.length
+        var lat = 0
+        var lng = 0
+
+        while (index < len) {
+            var b: Int
+            var shift = 0
+            var result = 0
+            do {
+                b = encoded[index++].code - 63
+                result = result or ((b and 0x1f) shl shift)
+                shift += 5
+            } while (b >= 0x20)
+            val dlat = if ((result and 1) != 0) (result shr 1).inv() else (result shr 1)
+            lat += dlat
+
+            shift = 0
+            result = 0
+            do {
+                b = encoded[index++].code - 63
+                result = result or ((b and 0x1f) shl shift)
+                shift += 5
+            } while (b >= 0x20)
+            val dlng = if ((result and 1) != 0) (result shr 1).inv() else (result shr 1)
+            lng += dlng
+
+            val pLat = lat.toDouble() / 1E5
+            val pLng = lng.toDouble() / 1E5
+            poly.add(Pair(pLat, pLng))
+        }
+        return poly
+    }
+
+    private fun parseOlaRoutingJson(json: String): List<ParsedGeoapifyRoute> {
+        val list = mutableListOf<ParsedGeoapifyRoute>()
+        try {
+            val root = JSONObject(json)
+            val routes = root.optJSONArray("routes") ?: return emptyList()
+            for (i in 0 until routes.length()) {
+                val routeObj = routes.getJSONObject(i)
+                val polyline = routeObj.optString("overview_polyline", "")
+                val coords = if (polyline.isNotBlank()) decodePolyline(polyline) else emptyList()
+                if (coords.isEmpty()) continue
+
+                val legs = routeObj.optJSONArray("legs")
+                var totalDist = 0.0
+                var totalDur = 0.0
+                val instructions = mutableListOf<TurnInstruction>()
+                val streetCounts = mutableMapOf<String, Double>()
+
+                if (legs != null) {
+                    for (l in 0 until legs.length()) {
+                        val leg = legs.getJSONObject(l)
+                        totalDist += leg.optDouble("distance", 0.0)
+                        totalDur += leg.optDouble("duration", 0.0)
+                        val steps = leg.optJSONArray("steps") ?: continue
+                        for (s in 0 until steps.length()) {
+                            val step = steps.getJSONObject(s)
+                            val instr = step.optString("instructions", "").trim()
+                            val dist = step.optDouble("distance", 0.0)
+                            val maneuver = step.optString("maneuver", "")
+
+                            val roadName = if (instr.contains("onto ", ignoreCase = true)) {
+                                instr.substringAfter("onto ", "").trim()
+                            } else if (instr.contains("on ", ignoreCase = true)) {
+                                instr.substringAfter("on ", "").trim()
+                            } else ""
+
+                            if (roadName.isNotBlank()) {
+                                streetCounts[roadName] = (streetCounts[roadName] ?: 0.0) + dist
+                            }
+
+                            val iconType = when {
+                                maneuver.contains("arrive", ignoreCase = true) -> "arrive"
+                                maneuver.contains("left", ignoreCase = true) -> "turn_left"
+                                maneuver.contains("right", ignoreCase = true) -> "turn_right"
+                                maneuver.contains("u-turn", ignoreCase = true) -> "u_turn"
+                                else -> "straight"
+                            }
+
+                            instructions.add(
+                                TurnInstruction(
+                                    distanceMeters = dist.toInt(),
+                                    text = instr.ifBlank { "Continue on route" },
+                                    streetName = roadName.ifBlank { "Main Road" },
+                                    iconType = iconType,
+                                    safetyStatus = "Active Corridor"
+                                )
+                            )
+                        }
+                    }
+                }
+
+                val prominentRoad = streetCounts.maxByOrNull { it.value }?.key ?: ""
+                list.add(
+                    ParsedGeoapifyRoute(
+                        type = if (i == 0) "ola_primary" else "ola_alternative_$i",
+                        distanceMeters = if (totalDist > 0) totalDist else 1000.0,
+                        durationSeconds = if (totalDur > 0) totalDur else 300.0,
+                        prominentStreet = prominentRoad,
+                        coordinates = coords,
+                        instructions = instructions
+                    )
+                )
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to parse Ola routing response: ${e.message}")
+        }
+        return list
+    }
 
     private fun parseGeoapifyRoutingJson(json: String, type: String): ParsedGeoapifyRoute? {
         try {
@@ -657,8 +994,8 @@ object GeoapifyService {
                     name = "$title Segment ${i + 1}",
                     distanceMeters = dist,
                     isMainRoad = (i == 0 || i == 1),
-                    lightingScore = if (corridor.isLitEstimated) 85f else (corridor.litRatio * 100f),
-                    crowdDensity = (corridor.openShopsDensityPer100m * 60f).coerceIn(40f, 95f),
+                    lightingScore = if (corridor.hasLightingData) (corridor.litRatio * 100f) else 0f,
+                    crowdDensity = if (corridor.openPlacesCount > 0) (corridor.openShopsDensityPer100m * 60f).coerceIn(20f, 95f) else 0f,
                     incidentCount = 0,
                     startLat = p1.first,
                     startLng = p1.second,

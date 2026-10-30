@@ -4,6 +4,8 @@ import android.content.Context
 import androidx.room.Database
 import androidx.room.Room
 import androidx.room.RoomDatabase
+import com.example.saferoute.risk.RiskDao
+import com.example.saferoute.risk.RiskSegmentEntity
 
 @Database(
     entities = [
@@ -11,9 +13,10 @@ import androidx.room.RoomDatabase
         TripHistoryEntity::class,
         SavedPlaceEntity::class,
         UserProfileEntity::class,
-        RouteOverpassCacheEntity::class
+        RouteOverpassCacheEntity::class,
+        RiskSegmentEntity::class
     ],
-    version = 3,
+    version = 4,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -22,6 +25,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun savedPlaceDao(): SavedPlaceDao
     abstract fun userProfileDao(): UserProfileDao
     abstract fun routeOverpassCacheDao(): RouteOverpassCacheDao
+    abstract fun riskDao(): RiskDao
 
     companion object {
         @Volatile

@@ -25,6 +25,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import com.example.saferoute.data.model.PlaceCategory
+import com.example.saferoute.util.appText
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowBack
@@ -507,6 +508,14 @@ fun RouteRecommendationScreen(
         }
 
         // CONDENSED, HIGH-READABILITY ROUTE CARDS LIST (Fills remaining height, ample spacing)
+        val modelMeta = remember {
+            try {
+                com.example.SafeRouteApplication.riskRepository.getModelMeta()
+            } catch (_: Throwable) {
+                null
+            }
+        }
+
         LazyColumn(
             modifier = Modifier
                 .fillMaxWidth()
@@ -514,6 +523,35 @@ fun RouteRecommendationScreen(
                 .padding(horizontal = 16.dp, vertical = 6.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
+            if (modelMeta?.isTrained == false) {
+                item {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(14.dp))
+                            .background(Color(0xFF1E293B))
+                            .border(1.dp, Color(0xFF475569), RoundedCornerShape(14.dp))
+                            .padding(12.dp)
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                imageVector = Icons.Default.Info,
+                                contentDescription = null,
+                                tint = SafeRouteTeal,
+                                modifier = Modifier.size(20.dp)
+                            )
+                            Spacer(modifier = Modifier.width(10.dp))
+                            Text(
+                                text = appText("model_not_trained_banner"),
+                                fontSize = 12.sp,
+                                color = Color(0xFFCBD5E1),
+                                lineHeight = 16.sp
+                            )
+                        }
+                    }
+                }
+            }
+
             items(routes) { route ->
                 val isSelected = route.id == selectedRouteId
 
@@ -556,10 +594,20 @@ fun RouteRecommendationScreen(
                                     color = Color(0xFF94A3B8)
                                 )
                             }
-                            SafetyBadge(score = route.safetyDetails.compositeScore)
+                            SafetyBadge(
+                                score = route.safetyDetails.compositeScore,
+                                confidence = route.safetyDetails.dataConfidence
+                            )
                         }
 
-                        Spacer(modifier = Modifier.height(8.dp))
+                        Spacer(modifier = Modifier.height(6.dp))
+
+                        // Data Confidence Badge
+                        com.example.saferoute.ui.components.DataConfidenceBadge(
+                            confidence = route.safetyDetails.dataConfidence
+                        )
+
+                        Spacer(modifier = Modifier.height(6.dp))
 
                         // 3: Route / Road name (bold, one line, ellipsis)
                         Text(
@@ -573,9 +621,46 @@ fun RouteRecommendationScreen(
 
                         Spacer(modifier = Modifier.height(4.dp))
 
-                        // 4: One short descriptor (one line max, truncate with ellipsis)
+                        // Road-Accident Risk (Distinct from personal safety)
+                        val roadRisk = route.roadRiskDetails
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                text = "Road-accident risk: ",
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = Color(0xFF94A3B8)
+                            )
+                            if (roadRisk != null && roadRisk.isAvailable) {
+                                Text(
+                                    text = roadRisk.roadRiskLevel.label,
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = roadRisk.roadRiskLevel.color
+                                )
+                                if (roadRisk.topReasons.isNotEmpty()) {
+                                    Text(
+                                        text = " (${roadRisk.topReasons.joinToString(", ")})",
+                                        fontSize = 11.sp,
+                                        color = Color(0xFF64748B),
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                            } else {
+                                Text(
+                                    text = "Unavailable (limited data)",
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Medium,
+                                    color = Color(0xFF64748B)
+                                )
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(4.dp))
+
+                        // 4: Personal safety night descriptor (one line max, truncate with ellipsis)
                         Text(
-                            text = route.safetyDetails.tierReason,
+                            text = "Personal safety (night): " + route.safetyDetails.tierReason,
                             fontSize = 12.sp,
                             color = Color(0xFF94A3B8),
                             maxLines = 1,
@@ -624,6 +709,23 @@ fun RouteRecommendationScreen(
                                         )
                                     }
                                 }
+                            }
+                        }
+
+                        route.safetyDetails.reliabilityWarning?.let { warning ->
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Surface(
+                                shape = RoundedCornerShape(8.dp),
+                                color = com.example.ui.theme.SafetyRed.copy(alpha = 0.15f),
+                                border = BorderStroke(0.8.dp, com.example.ui.theme.SafetyRed.copy(alpha = 0.35f))
+                            ) {
+                                Text(
+                                    text = warning,
+                                    fontSize = 11.sp,
+                                    color = com.example.ui.theme.SafetyRed,
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                    fontWeight = FontWeight.Medium
+                                )
                             }
                         }
 

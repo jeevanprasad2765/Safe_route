@@ -316,14 +316,75 @@ class SafeRouteRepository(
         )
     }
 
-    // ── MOCK ROUTING & SAFETY DATA GENERATION (COIMBATORE BOUNDS) ──
+    // ── ACCIDENT BLACK-SPOTS & REAL INCIDENT ZONES ──
 
     fun getIncidentZones(): List<IncidentZone> {
-        return listOf(
-            IncidentZone("iz_1", 10.9880, 76.9600, 250.0, 4, "Ukkadam Overpass (Low Lighting)", "2 hours ago"),
-            IncidentZone("iz_2", 11.0210, 76.9560, 180.0, 3, "North Flyover Construction Zone", "Yesterday"),
-            IncidentZone("iz_3", 10.9970, 77.0180, 300.0, 5, "Singanallur Lake Service Lane (Unlit Path)", "3 hours ago")
-        )
+        val list = mutableListOf<IncidentZone>()
+        val targetContext = context ?: try {
+            com.example.SafeRouteApplication.appContext
+        } catch (_: Throwable) {
+            null
+        }
+
+        // 1. Load from assets/blackspots.json
+        if (targetContext != null) {
+            try {
+                val jsonStr = targetContext.assets.open("blackspots.json").bufferedReader().use { it.readText() }
+                val array = org.json.JSONArray(jsonStr)
+                for (i in 0 until array.length()) {
+                    val obj = array.getJSONObject(i)
+                    val id = obj.optString("id", "bs_$i")
+                    val lat = obj.optDouble("lat", 0.0)
+                    val lng = obj.optDouble("lng", 0.0)
+                    val rad = obj.optDouble("radiusMeters", 150.0)
+                    val sev = obj.optInt("severity", 3)
+                    val desc = obj.optString("description", "Accident Black-spot")
+                    val src = obj.optString("source", "Official")
+                    val yr = obj.optInt("year", 2023)
+                    list.add(
+                        IncidentZone(
+                            id = id,
+                            latitude = lat,
+                            longitude = lng,
+                            radiusMeters = rad,
+                            severity = sev,
+                            category = "$desc ($src, $yr)",
+                            timestamp = "$yr"
+                        )
+                    )
+                }
+            } catch (e: Exception) {
+                android.util.Log.w("SafeRouteRepository", "Could not load blackspots.json: ${e.message}")
+            }
+        }
+
+        return list
+    }
+
+    suspend fun fetchIncidentZonesWithFirestore(): List<IncidentZone> {
+        val baseList = getIncidentZones().toMutableList()
+        try {
+            val userHazards = com.example.saferoute.data.firebase.FirebaseFirestoreManager.fetchUserHazards()
+            for ((idx, map) in userHazards.withIndex()) {
+                val lat = (map["latitude"] as? Number)?.toDouble() ?: continue
+                val lng = (map["longitude"] as? Number)?.toDouble() ?: continue
+                val desc = (map["description"] as? String) ?: (map["category"] as? String) ?: "User Reported Hazard"
+                val sev = (map["severity"] as? Number)?.toInt() ?: 3
+                val radius = (map["radiusMeters"] as? Number)?.toDouble() ?: 150.0
+                baseList.add(
+                    IncidentZone(
+                        id = "user_hazard_$idx",
+                        latitude = lat,
+                        longitude = lng,
+                        radiusMeters = radius,
+                        severity = sev,
+                        category = "User Report: $desc",
+                        timestamp = "Verified Hazard"
+                    )
+                )
+            }
+        } catch (_: Exception) {}
+        return baseList
     }
 
     private var lastComputedRoutes: List<RouteOption> = emptyList()
@@ -364,10 +425,19 @@ class SafeRouteRepository(
             emptyList()
         }
 
+        val routesWithRisk = routes.map { route ->
+            try {
+                val riskDetails = com.example.SafeRouteApplication.riskRepository.scoreRoute(route.pathCoordinates)
+                route.copy(roadRiskDetails = riskDetails)
+            } catch (_: Throwable) {
+                route
+            }
+        }
+
         val sorted = if (prioritizeSafety) {
-            routes.sortedByDescending { it.safetyDetails.compositeScore }
+            routesWithRisk.sortedByDescending { it.safetyDetails.compositeScore }
         } else {
-            routes.sortedBy { it.durationMinutes }
+            routesWithRisk.sortedBy { it.durationMinutes }
         }
         lastComputedRoutes = sorted
         return sorted
@@ -504,7 +574,7 @@ class SafeRouteRepository(
         val option1 = RouteOption(
             id = "opt_safe",
             name = "Avinashi Road Safe Corridor",
-            summary = "Well-lit 6-lane arterial highway with active CCTV, police patrols & high foot traffic",
+            summary = "Primary arterial highway connecting city center to TIDEL Park",
             distanceKm = totalDist1,
             durationMinutes = totalDur1,
             safetyDetails = score1,
@@ -515,7 +585,7 @@ class SafeRouteRepository(
                 Pair(11.0280, 77.0050)
             ),
             isRecommended = true,
-            warningNote = "Optimal streetlamp coverage & active emergency booths",
+            warningNote = "",
             sourceName = sourceWaypoint.name,
             destinationName = destWaypoint.name,
             waypoints = listOf(sourceWaypoint) + stopWaypoints + listOf(destWaypoint),
@@ -536,7 +606,7 @@ class SafeRouteRepository(
                 Pair(11.0280, 77.0050)
             ),
             isRecommended = false,
-            warningNote = "Moderate lighting on connector road",
+            warningNote = "",
             sourceName = sourceWaypoint.name,
             destinationName = destWaypoint.name,
             waypoints = listOf(sourceWaypoint) + stopWaypoints + listOf(destWaypoint),
@@ -546,7 +616,7 @@ class SafeRouteRepository(
         val option3 = RouteOption(
             id = "opt_fast",
             name = "Shortcut Route",
-            summary = "Quickest transit cut-through",
+            summary = "Secondary transit cut-through",
             distanceKm = totalDist3,
             durationMinutes = totalDur3,
             safetyDetails = score3,
@@ -557,14 +627,23 @@ class SafeRouteRepository(
                 Pair(11.0280, 77.0050)
             ),
             isRecommended = false,
-            warningNote = "Exercise caution after dusk",
+            warningNote = "",
             sourceName = sourceWaypoint.name,
             destinationName = destWaypoint.name,
             waypoints = listOf(sourceWaypoint) + stopWaypoints + listOf(destWaypoint),
             legs = legs3
         )
 
-        val rawList = listOf(option1, option2, option3)
+        val rawList = listOf(option1, option2, option3).map { route ->
+            try {
+                val riskDetails = kotlinx.coroutines.runBlocking {
+                    com.example.SafeRouteApplication.riskRepository.scoreRoute(route.pathCoordinates)
+                }
+                route.copy(roadRiskDetails = riskDetails)
+            } catch (_: Throwable) {
+                route
+            }
+        }
         return if (prioritizeSafety) {
             rawList.sortedByDescending { it.safetyDetails.compositeScore }
         } else {
@@ -578,9 +657,9 @@ class SafeRouteRepository(
             return found.turnInstructions
         }
         return listOf(
-            TurnInstruction(150, "Head along illuminated corridor", "Main Road", "straight", "Well-lit (96/100)"),
-            TurnInstruction(400, "Continue along safe corridor", "Arterial Road", "straight", "High Crowd Activity"),
-            TurnInstruction(100, "Arrive safely at destination", "Destination", "arrive", "Target Destination")
+            TurnInstruction(150, "Head along corridor", "Main Road", "straight", "Active Corridor"),
+            TurnInstruction(400, "Continue along route", "Arterial Road", "straight", "Active Corridor"),
+            TurnInstruction(100, "Arrive at destination", "Destination", "arrive", "Target Destination")
         )
     }
 }

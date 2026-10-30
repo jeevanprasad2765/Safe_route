@@ -146,10 +146,49 @@ class CorridorPlacesRepository(private val context: Context) {
             return@withContext parseOverpassJson(overpassJson, routeCoordinates, routeLengthMeters, durationMinutes)
         }
 
-        // 5. Fallback: Query Geoapify Places API along the polyline corridor
-        Log.i(TAG, "Overpass unavailable. Falling back to Geoapify Places API...")
-        val fallbackPlaces = fetchGeoapifyPlacesFallback(routeCoordinates)
+        // 5. Fallback: Query Geoapify Places API along the polyline corridor, or Coimbatore landmarks
+        Log.i(TAG, "Overpass unavailable. Falling back to Geoapify / Coimbatore landmark Places...")
+        val fallbackPlaces = fetchGeoapifyPlacesFallback(routeCoordinates).ifEmpty {
+            fetchLandmarkPlacesFallback(routeCoordinates)
+        }
         return@withContext buildCorridorFromPlaces(fallbackPlaces, routeCoordinates, routeLengthMeters, durationMinutes)
+    }
+
+    private fun fetchLandmarkPlacesFallback(
+        routeCoords: List<Pair<Double, Double>>
+    ): List<RoutePlace> {
+        val result = mutableListOf<RoutePlace>()
+        val landmarks = GeoapifyService.COIMBATORE_LANDMARKS
+        for (landmark in landmarks) {
+            val (dist, pos) = calculateDistancesToPolyline(Pair(landmark.latitude, landmark.longitude), routeCoords)
+            if (dist <= 650.0) {
+                val cat = when (landmark.type) {
+                    "hospital", "medical" -> PlaceCategory.HOSPITAL
+                    "police" -> PlaceCategory.POLICE
+                    "fuel" -> PlaceCategory.FUEL
+                    "station", "airport", "transport", "heritage", "education" -> PlaceCategory.OTHER_HELP
+                    "mall", "shopping", "business", "commercial" -> PlaceCategory.SHOP
+                    "food" -> PlaceCategory.FOOD
+                    else -> PlaceCategory.OTHER_HELP
+                }
+                result.add(
+                    RoutePlace(
+                        id = landmark.placeId ?: "cbe_${landmark.shortName.lowercase().replace(" ", "_")}",
+                        name = landmark.displayName,
+                        category = cat,
+                        lat = landmark.latitude,
+                        lng = landmark.longitude,
+                        distanceFromRouteM = dist,
+                        positionAlongRouteM = pos,
+                        openingHoursRaw = null,
+                        isOpenNow = true,
+                        isOpenWhenPassing = true,
+                        phone = null
+                    )
+                )
+            }
+        }
+        return result
     }
 
     private fun parseOverpassJson(
@@ -160,8 +199,13 @@ class CorridorPlacesRepository(private val context: Context) {
     ): RouteCorridorData {
         val rawPlaces = mutableListOf<RoutePlace>()
         var litWaysCount = 0
+        var unlitWaysCount = 0
+        var untaggedWaysCount = 0
         var totalWaysCount = 0
-        val highwayScores = mutableListOf<Float>()
+        val highwayClasses = mutableSetOf<String>()
+        val sidewalks = mutableSetOf<String>()
+        val maxspeeds = mutableSetOf<String>()
+        val surfaces = mutableSetOf<String>()
 
         try {
             val root = JSONObject(jsonString)
@@ -176,11 +220,26 @@ class CorridorPlacesRepository(private val context: Context) {
                 if (type == "way" && tags.has("highway")) {
                     totalWaysCount++
                     val litTag = tags.optString("lit", "").trim().lowercase()
-                    if (litTag == "yes" || litTag == "24/7" || litTag == "automatic") {
-                        litWaysCount++
+                    when {
+                        litTag in listOf("yes", "24/7", "automatic") -> litWaysCount++
+                        litTag == "no" -> unlitWaysCount++
+                        else -> untaggedWaysCount++
                     }
-                    val hClass = tags.optString("highway", "residential").lowercase()
-                    highwayScores.add(SafetyWeightConfig.HIGHWAY_CLASS_PROXY_SCORES[hClass] ?: 60f)
+
+                    val hClass = tags.optString("highway", "").lowercase().trim()
+                    if (hClass.isNotBlank()) highwayClasses.add(hClass)
+
+                    val sidewalk = tags.optString("sidewalk", "").lowercase().trim()
+                    if (sidewalk.isNotBlank() && sidewalk != "no" && sidewalk != "none") {
+                        sidewalks.add(sidewalk)
+                    }
+
+                    val maxspeed = tags.optString("maxspeed", "").trim()
+                    if (maxspeed.isNotBlank()) maxspeeds.add(maxspeed)
+
+                    val surface = tags.optString("surface", "").trim().lowercase()
+                    if (surface.isNotBlank()) surfaces.add(surface)
+
                     continue
                 }
 
@@ -224,14 +283,66 @@ class CorridorPlacesRepository(private val context: Context) {
             Log.e(TAG, "Error parsing Overpass JSON: ${e.message}")
         }
 
-        val litRatio = if (totalWaysCount > 0) {
-            litWaysCount.toFloat() / totalWaysCount.toFloat()
-        } else {
-            0.80f
-        }
-        val isLitEstimated = totalWaysCount == 0 || litWaysCount == 0
+        val hasLightingData = totalWaysCount > 0 && (litWaysCount > 0 || unlitWaysCount > 0)
+        val litRatio = if (totalWaysCount > 0) litWaysCount.toFloat() / totalWaysCount.toFloat() else 0.0f
+        val untaggedRatio = if (totalWaysCount > 0) untaggedWaysCount.toFloat() / totalWaysCount.toFloat() else 1.0f
 
-        return assembleCorridorMetrics(rawPlaces, routeCoords, routeLengthMeters, litRatio, isLitEstimated)
+        val sidewalkSummary = when {
+            sidewalks.isNotEmpty() -> "Sidewalks tagged (${sidewalks.take(2).joinToString(", ")})"
+            else -> "No sidewalk data tagged"
+        }
+        val speedSummary = when {
+            maxspeeds.isNotEmpty() -> "Speed limit: ${maxspeeds.take(2).joinToString(", ")} km/h"
+            else -> "Speed limit not tagged"
+        }
+
+        val (curvyCount, isGhat) = analyzeGeometryCurvature(routeCoords)
+        val isOutsideCbe = routeCoords.any { pt ->
+            pt.first < 10.8800 || pt.first > 11.1500 || pt.second < 76.8500 || pt.second > 77.1000
+        }
+        val isLongerThan25Km = routeLengthMeters > 25000.0
+
+        return assembleCorridorMetrics(
+            places = rawPlaces,
+            routeCoords = routeCoords,
+            routeLengthMeters = routeLengthMeters,
+            litRatio = litRatio,
+            untaggedRatio = untaggedRatio,
+            hasLightingData = hasLightingData,
+            totalWaysCount = totalWaysCount,
+            litWaysCount = litWaysCount,
+            unlitWaysCount = unlitWaysCount,
+            untaggedWaysCount = untaggedWaysCount,
+            isLitEstimated = false,
+            primaryHighwayClasses = highwayClasses.toList(),
+            sidewalkInfo = sidewalkSummary,
+            maxSpeedInfo = speedSummary,
+            surfaces = surfaces.toList(),
+            curvySectionCount = curvyCount,
+            isGhatSection = isGhat,
+            isOutsideCoimbatoreBounds = isOutsideCbe,
+            isLengthExceeding25Km = isLongerThan25Km,
+            hasCorridorData = totalWaysCount > 0 || rawPlaces.isNotEmpty()
+        )
+    }
+
+    private fun analyzeGeometryCurvature(coords: List<Pair<Double, Double>>): Pair<Int, Boolean> {
+        if (coords.size < 4) return Pair(0, false)
+        var sharpTurns = 0
+        for (i in 1 until coords.size - 1) {
+            val p0 = coords[i - 1]
+            val p1 = coords[i]
+            val p2 = coords[i + 1]
+            val b1 = Math.toDegrees(Math.atan2(p1.second - p0.second, p1.first - p0.first))
+            val b2 = Math.toDegrees(Math.atan2(p2.second - p1.second, p2.first - p1.first))
+            var diff = Math.abs(b2 - b1)
+            if (diff > 180.0) diff = 360.0 - diff
+            if (diff >= 45.0) {
+                sharpTurns++
+            }
+        }
+        val isGhat = sharpTurns >= 8
+        return Pair(sharpTurns, isGhat)
     }
 
     private suspend fun fetchGeoapifyPlacesFallback(
@@ -329,7 +440,34 @@ class CorridorPlacesRepository(private val context: Context) {
         routeLengthMeters: Double,
         durationMinutes: Int
     ): RouteCorridorData {
-        return assembleCorridorMetrics(places, routeCoords, routeLengthMeters, 0.82f, isLitEstimated = true)
+        val (curvyCount, isGhat) = analyzeGeometryCurvature(routeCoords)
+        val isOutsideCbe = routeCoords.any { pt ->
+            pt.first < 10.8800 || pt.first > 11.1500 || pt.second < 76.8500 || pt.second > 77.1000
+        }
+        val isLongerThan25Km = routeLengthMeters > 25000.0
+
+        return assembleCorridorMetrics(
+            places = places,
+            routeCoords = routeCoords,
+            routeLengthMeters = routeLengthMeters,
+            litRatio = 0.0f,
+            untaggedRatio = 1.0f,
+            hasLightingData = false,
+            totalWaysCount = 0,
+            litWaysCount = 0,
+            unlitWaysCount = 0,
+            untaggedWaysCount = 0,
+            isLitEstimated = false,
+            primaryHighwayClasses = emptyList(),
+            sidewalkInfo = "No sidewalk data tagged",
+            maxSpeedInfo = "Speed limit not tagged",
+            surfaces = emptyList(),
+            curvySectionCount = curvyCount,
+            isGhatSection = isGhat,
+            isOutsideCoimbatoreBounds = isOutsideCbe,
+            isLengthExceeding25Km = isLongerThan25Km,
+            hasCorridorData = places.isNotEmpty()
+        )
     }
 
     private fun assembleCorridorMetrics(
@@ -337,7 +475,22 @@ class CorridorPlacesRepository(private val context: Context) {
         routeCoords: List<Pair<Double, Double>>,
         routeLengthMeters: Double,
         litRatio: Float,
-        isLitEstimated: Boolean
+        untaggedRatio: Float = 1.0f,
+        hasLightingData: Boolean = false,
+        totalWaysCount: Int = 0,
+        litWaysCount: Int = 0,
+        unlitWaysCount: Int = 0,
+        untaggedWaysCount: Int = 0,
+        isLitEstimated: Boolean = false,
+        primaryHighwayClasses: List<String> = emptyList(),
+        sidewalkInfo: String = "",
+        maxSpeedInfo: String = "",
+        surfaces: List<String> = emptyList(),
+        curvySectionCount: Int = 0,
+        isGhatSection: Boolean = false,
+        isOutsideCoimbatoreBounds: Boolean = false,
+        isLengthExceeding25Km: Boolean = false,
+        hasCorridorData: Boolean = false
     ): RouteCorridorData {
         val sortedPlaces = places.sortedBy { it.positionAlongRouteM }
         val openPlaces = sortedPlaces.filter { it.isOpenWhenPassing }
@@ -404,13 +557,28 @@ class CorridorPlacesRepository(private val context: Context) {
         return RouteCorridorData(
             places = sortedPlaces,
             litRatio = litRatio,
+            untaggedRatio = untaggedRatio,
+            hasLightingData = hasLightingData,
+            totalWaysCount = totalWaysCount,
+            litWaysCount = litWaysCount,
+            unlitWaysCount = unlitWaysCount,
+            untaggedWaysCount = untaggedWaysCount,
             isLitEstimated = isLitEstimated,
             openPlacesCount = openPlaces.size,
             totalPlacesCount = sortedPlaces.size,
             openShopsDensityPer100m = openBusinessDensity,
             longestStretchWithoutHelpM = maxGapMeters,
             helpCoverageScore = helpCoverageScore,
-            coverageSegments = strips
+            coverageSegments = strips,
+            primaryHighwayClasses = primaryHighwayClasses,
+            sidewalkInfo = sidewalkInfo,
+            maxSpeedInfo = maxSpeedInfo,
+            surfaces = surfaces,
+            curvySectionCount = curvySectionCount,
+            isGhatSection = isGhatSection,
+            isOutsideCoimbatoreBounds = isOutsideCoimbatoreBounds,
+            isLengthExceeding25Km = isLengthExceeding25Km,
+            hasCorridorData = hasCorridorData
         )
     }
 

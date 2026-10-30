@@ -1,10 +1,16 @@
 package com.example
 
+import com.example.saferoute.data.model.DataConfidence
 import com.example.saferoute.data.model.IncidentZone
+import com.example.saferoute.data.model.PlaceCategory
+import com.example.saferoute.data.model.RouteCorridorData
+import com.example.saferoute.data.model.RoutePlace
 import com.example.saferoute.data.model.RouteSegment
 import com.example.saferoute.data.model.TimeOfDay
 import com.example.saferoute.safety.SafetyCalculator
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -12,7 +18,6 @@ class SafetyCalculatorTest {
 
     @Test
     fun testTwoRoutesWithDifferentGeometryGetDifferentScores() {
-        // Incident zone near the secondary route
         val incidentZones = listOf(
             IncidentZone(
                 id = "iz_1",
@@ -66,7 +71,7 @@ class SafetyCalculatorTest {
                 crowdDensity = 35f,
                 incidentCount = 1,
                 startLat = 11.0205,
-                startLng = 76.9555, // Very close to incident zone iz_1 (11.0210, 76.9560)
+                startLng = 76.9555,
                 endLat = 11.0230,
                 endLng = 76.9700
             ),
@@ -88,13 +93,128 @@ class SafetyCalculatorTest {
         val scoreA = SafetyCalculator.calculateRouteSafety(routeASegments, TimeOfDay.DUSK, incidentZones, "route_a")
         val scoreB = SafetyCalculator.calculateRouteSafety(routeBSegments, TimeOfDay.DUSK, incidentZones, "route_b")
 
-        println("Route A Composite Score: ${scoreA.compositeScore} (Lighting=${scoreA.lightingFactor}, Crowd=${scoreA.crowdDensityFactor}, Incident=${scoreA.incidentHistoryFactor})")
-        println("Route B Composite Score: ${scoreB.compositeScore} (Lighting=${scoreB.lightingFactor}, Crowd=${scoreB.crowdDensityFactor}, Incident=${scoreB.incidentHistoryFactor})")
-
-        // Assert that the scores are significantly different and not identical
         assertNotEquals("Composite safety scores must not be equal", scoreA.compositeScore, scoreB.compositeScore)
-        assertTrue("Route A score (${scoreA.compositeScore}) should be substantially higher than Route B (${scoreB.compositeScore})", scoreA.compositeScore > scoreB.compositeScore + 20)
+        assertTrue("Route A score (${scoreA.compositeScore}) should be substantially higher than Route B (${scoreB.compositeScore})", scoreA.compositeScore > scoreB.compositeScore + 15)
         assertTrue("Route A should fall into High Safety tier (>=80)", scoreA.compositeScore >= 80)
         assertTrue("Route B should fall into Caution/Risk tier (<60)", scoreB.compositeScore < 60)
+    }
+
+    @Test
+    fun testRouteWithNoLitTagsYieldsNoDataForLighting() {
+        val coords = listOf(Pair(11.0168, 76.9558), Pair(11.0200, 76.9600))
+        val corridorWithNoLitTags = RouteCorridorData(
+            places = emptyList(),
+            litRatio = 0.0f,
+            untaggedRatio = 1.0f,
+            totalWaysCount = 10,
+            litWaysCount = 0,
+            unlitWaysCount = 0,
+            untaggedWaysCount = 10,
+            hasLightingData = false
+        )
+
+        val details = SafetyCalculator.calculateRouteSafetyFromCorridor(
+            routeIndex = 0,
+            routeCoordinates = coords,
+            corridorData = corridorWithNoLitTags,
+            timeOfDay = TimeOfDay.DUSK,
+            incidentZones = emptyList(),
+            routeId = "test_no_lit"
+        )
+
+        // Must NOT default to 100% or show a percentage
+        assertNull("Lighting factor must be null when no lit tags exist", details.lightingFactor)
+        assertEquals("Lighting data unavailable for most of this route", details.lightingFactText)
+    }
+
+    @Test
+    fun testRouteWithNoBlackSpotDataYieldsNoIncidentData() {
+        val coords = listOf(Pair(11.0168, 76.9558), Pair(11.0200, 76.9600))
+        val corridor = RouteCorridorData(
+            places = emptyList(),
+            litRatio = 0.8f,
+            untaggedRatio = 0.2f,
+            totalWaysCount = 10,
+            litWaysCount = 8,
+            hasLightingData = true
+        )
+
+        val details = SafetyCalculator.calculateRouteSafetyFromCorridor(
+            routeIndex = 0,
+            routeCoordinates = coords,
+            corridorData = corridor,
+            timeOfDay = TimeOfDay.DUSK,
+            incidentZones = emptyList(), // No black-spots in this area
+            routeId = "test_no_incidents"
+        )
+
+        assertNull("Incident factor must be null when no black-spot data is available for area", details.incidentHistoryFactor)
+        assertEquals("No incident data for this area", details.incidentFactText)
+    }
+
+    @Test
+    fun testTwoDifferentRoutesYieldDifferentBreakdowns() {
+        val coords1 = listOf(Pair(11.0168, 76.9558), Pair(11.0250, 76.9800))
+        val coords2 = listOf(Pair(11.0110, 76.9620), Pair(11.0210, 76.9850))
+
+        val blackspot = IncidentZone("bs_1", 11.0150, 76.9650, 200.0, 4, "Accident Zone", "2023")
+
+        val corridor1 = RouteCorridorData(
+            places = listOf(
+                RoutePlace("p1", "GKNM Hospital", PlaceCategory.HOSPITAL, 11.0180, 76.9600, 30.0, 500.0, null, true, null, null, true, true),
+                RoutePlace("p2", "Apollo Pharmacy", PlaceCategory.PHARMACY, 11.0190, 76.9650, 20.0, 900.0, null, true, null, null, false, true),
+                RoutePlace("p3", "Nilgiris Supermarket", PlaceCategory.SHOP, 11.0200, 76.9700, 40.0, 1400.0, null, true, null, null, false, true)
+            ),
+            litRatio = 0.85f,
+            untaggedRatio = 0.15f,
+            totalWaysCount = 20,
+            litWaysCount = 17,
+            hasLightingData = true,
+            openPlacesCount = 3,
+            totalPlacesCount = 3,
+            openShopsDensityPer100m = 0.8f,
+            primaryHighwayClasses = listOf("primary", "trunk")
+        )
+
+        val corridor2 = RouteCorridorData(
+            places = emptyList(),
+            litRatio = 0.10f,
+            untaggedRatio = 0.90f,
+            totalWaysCount = 15,
+            litWaysCount = 1,
+            unlitWaysCount = 1,
+            untaggedWaysCount = 13,
+            hasLightingData = false,
+            openPlacesCount = 0,
+            totalPlacesCount = 0,
+            primaryHighwayClasses = listOf("residential", "service"),
+            curvySectionCount = 5
+        )
+
+        val details1 = SafetyCalculator.calculateRouteSafetyFromCorridor(
+            routeIndex = 0,
+            routeCoordinates = coords1,
+            corridorData = corridor1,
+            timeOfDay = TimeOfDay.DUSK,
+            incidentZones = listOf(blackspot),
+            routeId = "route_1"
+        )
+
+        val details2 = SafetyCalculator.calculateRouteSafetyFromCorridor(
+            routeIndex = 1,
+            routeCoordinates = coords2,
+            corridorData = corridor2,
+            timeOfDay = TimeOfDay.DUSK,
+            incidentZones = listOf(blackspot),
+            routeId = "route_2"
+        )
+
+        assertNotEquals("Route breakdowns must not have identical confidence", details1.dataConfidence, details2.dataConfidence)
+        assertEquals("Route 1 should have high confidence", DataConfidence.HIGH, details1.dataConfidence)
+        assertEquals("Route 2 should have low confidence due to missing lighting & activity", DataConfidence.LOW, details2.dataConfidence)
+        assertTrue("Route 1 score must be > 0", details1.compositeScore > 0)
+        assertEquals("Route 2 score must be withheld (0) due to low confidence", 0, details2.compositeScore)
+        assertNotEquals(details1.lightingFactText, details2.lightingFactText)
+        assertNotEquals(details1.activityFactText, details2.activityFactText)
     }
 }

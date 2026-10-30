@@ -11,6 +11,8 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Shield
@@ -26,6 +28,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.saferoute.data.model.DataConfidence
 import com.example.ui.theme.SafetyAmber
 import com.example.ui.theme.SafetyGreen
 import com.example.ui.theme.SafetyRed
@@ -34,8 +37,39 @@ import com.example.ui.theme.SafetyRed
 fun SafetyBadge(
     score: Int,
     modifier: Modifier = Modifier,
-    showLabel: Boolean = true
+    showLabel: Boolean = true,
+    confidence: DataConfidence = DataConfidence.HIGH
 ) {
+    if (confidence == DataConfidence.LOW || score <= 0) {
+        val greyColor = Color(0xFF94A3B8)
+        val shape = RoundedCornerShape(12.dp)
+        Row(
+            modifier = modifier
+                .testTag("safety_score_badge")
+                .clip(shape)
+                .background(greyColor.copy(alpha = 0.15f))
+                .border(1.dp, greyColor.copy(alpha = 0.35f), shape)
+                .padding(horizontal = 10.dp, vertical = 5.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(
+                imageVector = Icons.Default.Shield,
+                contentDescription = "Safety Score Unavailable",
+                tint = greyColor,
+                modifier = Modifier.size(15.dp)
+            )
+            Spacer(modifier = Modifier.width(6.dp))
+            Text(
+                text = "Limited Data",
+                color = greyColor,
+                fontWeight = FontWeight.Bold,
+                fontSize = 12.sp,
+                letterSpacing = 0.3.sp
+            )
+        }
+        return
+    }
+
     val (badgeColor, containerColor, labelPrefix) = when {
         score >= 80 -> Triple(SafetyGreen, SafetyGreen.copy(alpha = 0.15f), "SAFE")
         score >= 60 -> Triple(SafetyAmber, SafetyAmber.copy(alpha = 0.15f), "CAUTION")
@@ -78,6 +112,42 @@ fun SafetyBadge(
             fontWeight = FontWeight.Bold,
             fontSize = 12.sp,
             letterSpacing = 0.3.sp
+        )
+    }
+}
+
+@Composable
+fun DataConfidenceBadge(
+    confidence: DataConfidence,
+    modifier: Modifier = Modifier
+) {
+    val (color, label) = when (confidence) {
+        DataConfidence.HIGH -> Pair(SafetyGreen, "High")
+        DataConfidence.MEDIUM -> Pair(SafetyAmber, "Medium")
+        DataConfidence.LOW -> Pair(Color(0xFF94A3B8), "Low")
+    }
+
+    val shape = RoundedCornerShape(8.dp)
+    Row(
+        modifier = modifier
+            .clip(shape)
+            .background(color.copy(alpha = 0.15f))
+            .border(0.8.dp, color.copy(alpha = 0.35f), shape)
+            .padding(horizontal = 8.dp, vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Box(
+            modifier = Modifier
+                .size(6.dp)
+                .clip(CircleShape)
+                .background(color)
+        )
+        Spacer(modifier = Modifier.width(5.dp))
+        Text(
+            text = "Data confidence: $label",
+            fontSize = 11.sp,
+            fontWeight = FontWeight.Medium,
+            color = color
         )
     }
 }

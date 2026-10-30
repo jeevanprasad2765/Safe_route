@@ -36,14 +36,20 @@ data class RouteSegment(
     val endLng: Double
 )
 
+enum class DataConfidence(val label: String, val color: Color) {
+    HIGH("High", SafetyGreen),
+    MEDIUM("Medium", SafetyAmber),
+    LOW("Low", SafetyRed)
+}
+
 data class SafetyScoreDetails(
     val compositeScore: Int, // 0 to 100
-    val lightingFactor: Float, // 0 to 100
-    val crowdDensityFactor: Float, // 0 to 100
-    val incidentHistoryFactor: Float, // 0 to 100
-    val timeOfDayFactor: Float, // 0 to 100
+    val lightingFactor: Float? = null, // 0 to 100 or null if no data
+    val crowdDensityFactor: Float? = null, // 0 to 100 or null if no data
+    val incidentHistoryFactor: Float? = null, // 0 to 100 or null if no data
+    val timeOfDayFactor: Float = 85f, // 0 to 100
     val tierReason: String,
-    val helpCoverageFactor: Float = 80f,
+    val helpCoverageFactor: Float? = null, // 0 to 100 or null if no data
     val isLightingEstimated: Boolean = false,
     val longestStretchWithoutHelpMeters: Double = 0.0,
     val openPlacesCount: Int = 0,
@@ -53,7 +59,16 @@ data class SafetyScoreDetails(
     val petrolPumpsCount: Int = 0,
     val policeCount: Int = 0,
     val shopsCount: Int = 0,
-    val foodCount: Int = 0
+    val foodCount: Int = 0,
+    val lightingFactText: String = "",
+    val incidentFactText: String = "",
+    val activityFactText: String = "",
+    val roadTypeFactText: String = "",
+    val dataConfidence: DataConfidence = DataConfidence.LOW,
+    val hasIncidentData: Boolean = false,
+    val hasLightingData: Boolean = false,
+    val hasActivityData: Boolean = false,
+    val reliabilityWarning: String? = null
 ) {
     val tier: SafetyTier
         get() = when {
@@ -109,7 +124,8 @@ data class RouteOption(
     val legs: List<RouteLeg> = emptyList(),
     val turnInstructions: List<TurnInstruction> = emptyList(),
     val places: List<RoutePlace> = emptyList(),
-    val corridorData: RouteCorridorData = RouteCorridorData()
+    val corridorData: RouteCorridorData = RouteCorridorData(),
+    val roadRiskDetails: com.example.saferoute.risk.RoadRiskScoreDetails? = null
 )
 
 data class TurnInstruction(

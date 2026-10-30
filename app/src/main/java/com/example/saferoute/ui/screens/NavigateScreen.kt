@@ -250,10 +250,20 @@ fun NavigateScreen(
                     RouteOption(
                         id = "opt_quick_avinashi",
                         name = "Avinashi Road Safe Corridor",
-                        summary = "Gandhipuram ➔ TIDEL Park, Peelamedu (High Lighting)",
+                        summary = "Gandhipuram ➔ TIDEL Park, Peelamedu",
                         distanceKm = 5.4,
                         durationMinutes = 16,
-                        safetyDetails = com.example.saferoute.data.model.SafetyScoreDetails(95, 96f, 92f, 95f, 90f, "Optimal lighting"),
+                        safetyDetails = com.example.saferoute.data.model.SafetyScoreDetails(
+                            compositeScore = 0,
+                            lightingFactor = null,
+                            crowdDensityFactor = null,
+                            incidentHistoryFactor = null,
+                            tierReason = "Select route to query live OpenStreetMap data",
+                            dataConfidence = com.example.saferoute.data.model.DataConfidence.LOW,
+                            lightingFactText = "Lighting data unavailable until route queried",
+                            incidentFactText = "No incident data loaded",
+                            activityFactText = "Activity data unavailable"
+                        ),
                         segments = emptyList(),
                         pathCoordinates = listOf(
                             Pair(11.0089, 76.9507),
@@ -270,11 +280,21 @@ fun NavigateScreen(
                     ),
                     RouteOption(
                         id = "opt_quick_racecourse",
-                        name = "Race Course Illuminated Loop",
-                        summary = "Promenade ➔ Railway Central (Patrolled CCTV Area)",
+                        name = "Race Course Loop",
+                        summary = "Promenade ➔ Railway Central",
                         distanceKm = 3.2,
                         durationMinutes = 10,
-                        safetyDetails = com.example.saferoute.data.model.SafetyScoreDetails(91, 94f, 88f, 90f, 90f, "CCTV monitored"),
+                        safetyDetails = com.example.saferoute.data.model.SafetyScoreDetails(
+                            compositeScore = 0,
+                            lightingFactor = null,
+                            crowdDensityFactor = null,
+                            incidentHistoryFactor = null,
+                            tierReason = "Select route to query live OpenStreetMap data",
+                            dataConfidence = com.example.saferoute.data.model.DataConfidence.LOW,
+                            lightingFactText = "Lighting data unavailable until route queried",
+                            incidentFactText = "No incident data loaded",
+                            activityFactText = "Activity data unavailable"
+                        ),
                         segments = emptyList(),
                         pathCoordinates = listOf(
                             Pair(11.0016, 76.9740),
@@ -287,11 +307,21 @@ fun NavigateScreen(
                     ),
                     RouteOption(
                         id = "opt_quick_dbroad",
-                        name = "DB Road Commercial Boulevard",
-                        summary = "RS Puram ➔ Saibaba Colony (Active Pedestrian Strip)",
+                        name = "DB Road Boulevard",
+                        summary = "RS Puram ➔ Saibaba Colony",
                         distanceKm = 2.8,
                         durationMinutes = 9,
-                        safetyDetails = com.example.saferoute.data.model.SafetyScoreDetails(89, 90f, 86f, 88f, 90f, "Active shops"),
+                        safetyDetails = com.example.saferoute.data.model.SafetyScoreDetails(
+                            compositeScore = 0,
+                            lightingFactor = null,
+                            crowdDensityFactor = null,
+                            incidentHistoryFactor = null,
+                            tierReason = "Select route to query live OpenStreetMap data",
+                            dataConfidence = com.example.saferoute.data.model.DataConfidence.LOW,
+                            lightingFactText = "Lighting data unavailable until route queried",
+                            incidentFactText = "No incident data loaded",
+                            activityFactText = "Activity data unavailable"
+                        ),
                         segments = emptyList(),
                         pathCoordinates = listOf(
                             Pair(11.0072, 76.9515),
@@ -332,19 +362,21 @@ fun NavigateScreen(
                                         fontWeight = FontWeight.Bold,
                                         color = Color.White
                                     )
-                                    Spacer(modifier = Modifier.width(6.dp))
-                                    Box(
-                                        modifier = Modifier
-                                            .clip(RoundedCornerShape(8.dp))
-                                            .background(SafetyGreen.copy(alpha = 0.20f))
-                                            .padding(horizontal = 6.dp, vertical = 2.dp)
-                                    ) {
-                                        Text(
-                                            text = "${corridor.safetyDetails.compositeScore}",
-                                            fontSize = 10.sp,
-                                            fontWeight = FontWeight.Black,
-                                            color = SafetyGreen
-                                        )
+                                    if (corridor.safetyDetails.compositeScore > 0 && corridor.safetyDetails.dataConfidence != com.example.saferoute.data.model.DataConfidence.LOW) {
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Box(
+                                            modifier = Modifier
+                                                .clip(RoundedCornerShape(8.dp))
+                                                .background(SafetyGreen.copy(alpha = 0.20f))
+                                                .padding(horizontal = 6.dp, vertical = 2.dp)
+                                        ) {
+                                            Text(
+                                                text = "${corridor.safetyDetails.compositeScore}",
+                                                fontSize = 10.sp,
+                                                fontWeight = FontWeight.Black,
+                                                color = SafetyGreen
+                                            )
+                                        }
                                     }
                                 }
                                 Spacer(modifier = Modifier.height(4.dp))

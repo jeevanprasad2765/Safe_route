@@ -329,8 +329,21 @@ class SafeRouteViewModel(application: Application) : AndroidViewModel(applicatio
                 prioritizeSafety = _prioritizeSafety.value
             )
 
+            val finalRoutes = if (routes.isNotEmpty()) {
+                routes
+            } else {
+                repository.computeRouteOptions(
+                    origin = src,
+                    destination = dst,
+                    waypointsNames = waypoints,
+                    timeOfDay = _timeOfDay.value,
+                    prioritizeSafety = _prioritizeSafety.value,
+                    originCoords = resolvedSourceCoords
+                )
+            }
+
             // Step 1: Diagnose & log route point counts, lengths, and safety score components
-            routes.forEachIndexed { idx, r ->
+            finalRoutes.forEachIndexed { idx, r ->
                 android.util.Log.d(
                     "SafeRouteViewModel",
                     "Route [$idx] ID='${r.id}' Name='${r.name}' Points=${r.pathCoordinates.size} " +
@@ -342,7 +355,7 @@ class SafeRouteViewModel(application: Application) : AndroidViewModel(applicatio
                 )
             }
 
-            if (routes.isEmpty()) {
+            if (finalRoutes.isEmpty()) {
                 val errorMsg = com.example.saferoute.data.network.GeoapifyService.lastErrorMessage.value ?: "Couldn't find that place"
                 _routeErrorMessage.value = errorMsg
                 _isLoadingRoute.value = false
@@ -350,8 +363,8 @@ class SafeRouteViewModel(application: Application) : AndroidViewModel(applicatio
                 return@launch
             }
 
-            _activeRouteOptions.value = routes
-            _selectedRouteId.value = routes.firstOrNull()?.id ?: "opt_safe"
+            _activeRouteOptions.value = finalRoutes
+            _selectedRouteId.value = finalRoutes.firstOrNull()?.id ?: "opt_safe"
             _currentScreen.value = ScreenState.RouteRecommendations(
                 source = src,
                 destination = dst,

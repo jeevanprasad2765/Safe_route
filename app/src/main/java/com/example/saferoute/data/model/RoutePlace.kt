@@ -58,12 +58,28 @@ data class CoverageSegment(
  */
 data class RouteCorridorData(
     val places: List<RoutePlace> = emptyList(),
-    val litRatio: Float = 0.85f,
+    val litRatio: Float = 0.0f,
+    val untaggedRatio: Float = 1.0f,
+    val hasLightingData: Boolean = false,
+    val totalWaysCount: Int = 0,
+    val litWaysCount: Int = 0,
+    val unlitWaysCount: Int = 0,
+    val untaggedWaysCount: Int = 0,
     val isLitEstimated: Boolean = false,
     val openPlacesCount: Int = 0,
     val totalPlacesCount: Int = 0,
     val openShopsDensityPer100m: Float = 0f,
     val longestStretchWithoutHelpM: Double = 0.0,
     val helpCoverageScore: Float = 80f,
-    val coverageSegments: List<CoverageSegment> = emptyList()
+    val coverageSegments: List<CoverageSegment> = emptyList(),
+    // OSM Road characteristics
+    val primaryHighwayClasses: List<String> = emptyList(),
+    val sidewalkInfo: String = "",
+    val maxSpeedInfo: String = "",
+    val surfaces: List<String> = emptyList(),
+    val curvySectionCount: Int = 0,
+    val isGhatSection: Boolean = false,
+    val isOutsideCoimbatoreBounds: Boolean = false,
+    val isLengthExceeding25Km: Boolean = false,
+    val hasCorridorData: Boolean = false
 )

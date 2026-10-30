@@ -1,0 +1,42 @@
+[
+  {
+    "id": "bs_cbe_1",
+    "lat": 10.9935,
+    "lng": 76.9620,
+    "radiusMeters": 180.0,
+    "source": "Coimbatore City Traffic Police Annual Safety Report",
+    "year": 2023,
+    "severity": 4,
+    "description": "Ukkadam Junction / Pollachi Road intersection"
+  },
+  {
+    "id": "bs_cbe_2",
+    "lat": 11.0182,
+    "lng": 76.9678,
+    "radiusMeters": 150.0,
+    "source": "State Highway Safety Cell Tamil Nadu",
+    "year": 2023,
+    "severity": 3,
+    "description": "Gandhipuram Cross Cut Road crossing"
+  },
+  {
+    "id": "bs_cbe_3",
+    "lat": 11.0298,
+    "lng": 77.0285,
+    "radiusMeters": 200.0,
+    "source": "Ministry of Road Transport and Highways (MoRTH)",
+    "year": 2022,
+    "severity": 4,
+    "description": "Avinashi Road / Hope College Junction"
+  },
+  {
+    "id": "bs_cbe_4",
+    "lat": 11.0012,
+    "lng": 77.0125,
+    "radiusMeters": 180.0,
+    "source": "Coimbatore City Traffic Police Annual Safety Report",
+    "year": 2023,
+    "severity": 3,
+    "description": "Singanallur Junction on Trichy Road"
+  }
+]

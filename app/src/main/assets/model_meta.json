@@ -1,0 +1,5 @@
+{
+  "trained": false,
+  "reason": "Only 0 real black-spot rows found. Minimum 100 required. Fill data/blackspots.csv with verified accident locations from official sources (Tamil Nadu Traffic Police, MoRTH, RTI reports).",
+  "generated_at": "2026-10-30T12:18:33.974328"
+}

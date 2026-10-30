@@ -32,52 +32,60 @@ object SafetyCalculator {
         timeOfDay: TimeOfDay,
         incidentZones: List<IncidentZone> = emptyList()
     ): SafetyScoreDetails {
-        // 1. Lighting Factor (0-100)
-        // Main roads receive a +20 bonus for municipal streetlamp coverage
-        val rawLighting = if (segment.isMainRoad) {
-            min(100.0f, segment.lightingScore + 20.0f)
-        } else {
-            segment.lightingScore
-        }
+        val hasLighting = segment.lightingScore > 0f
+        val rawLighting = if (hasLighting) {
+            if (segment.isMainRoad) min(100.0f, segment.lightingScore + 20.0f) else segment.lightingScore
+        } else null
 
-        // 2. Crowd Density Factor (0-100)
-        // Active pedestrian crowds enhance safety perception
-        val crowdFactor = segment.crowdDensity
+        val hasCrowd = segment.crowdDensity > 0f
+        val crowdFactor = if (hasCrowd) segment.crowdDensity else null
 
-        // 3. Incident History Factor (0-100, where 100 = zero incident risk)
-        val zonePenalties = incidentZones.sumOf { zone ->
-            val dist = calculateDistanceMeters(
-                segment.startLat, segment.startLng,
-                zone.latitude, zone.longitude
-            )
-            if (dist <= zone.radiusMeters) {
-                (zone.severity * 15.0)
-            } else if (dist <= zone.radiusMeters * 2) {
-                (zone.severity * 5.0)
-            } else {
-                0.0
+        val hasIncidentData = incidentZones.isNotEmpty() || segment.incidentCount > 0
+        val incidentScore = if (hasIncidentData) {
+            val zonePenalties = incidentZones.sumOf { zone ->
+                val dist = calculateDistanceMeters(
+                    segment.startLat, segment.startLng,
+                    zone.latitude, zone.longitude
+                )
+                if (dist <= zone.radiusMeters) {
+                    (zone.severity * 15.0)
+                } else if (dist <= zone.radiusMeters * 2) {
+                    (zone.severity * 5.0)
+                } else {
+                    0.0
+                }
             }
-        }
-        val directPenalty = segment.incidentCount * 25.0f
-        val incidentScore = max(0.0f, (100.0f - (directPenalty + zonePenalties.toFloat())))
+            val directPenalty = segment.incidentCount * 25.0f
+            max(0.0f, (100.0f - (directPenalty + zonePenalties.toFloat())))
+        } else null
 
-        // 4. Weighted Baseline Score
-        val baseScore = (rawLighting * 0.35f) +
-                (crowdFactor * 0.25f) +
-                (incidentScore * 0.25f) +
+        // Confidence calculation
+        var realFactors = 0
+        if (rawLighting != null) realFactors++
+        if (crowdFactor != null) realFactors++
+        if (incidentScore != null) realFactors++
+
+        val confidence = when (realFactors) {
+            3 -> com.example.saferoute.data.model.DataConfidence.HIGH
+            2 -> com.example.saferoute.data.model.DataConfidence.MEDIUM
+            else -> com.example.saferoute.data.model.DataConfidence.LOW
+        }
+
+        val baseScore = ((rawLighting ?: 50f) * 0.35f) +
+                ((crowdFactor ?: 50f) * 0.25f) +
+                ((incidentScore ?: 50f) * 0.25f) +
                 (if (segment.isMainRoad) 15.0f else 5.0f)
 
-        // 5. Apply Time-of-Day Multiplier
         val timeFactorValue = timeOfDay.multiplier * 100.0f
         val finalCompositeScore = (baseScore * timeOfDay.multiplier)
             .coerceIn(10.0f, 99.0f)
             .toInt()
 
-        // Plain language reason rationale
         val reason = when {
-            finalCompositeScore >= 80 -> if (segment.isMainRoad) "Well-lit main thoroughfare with high crowd presence" else "Safely lit residential avenue"
-            finalCompositeScore >= 60 -> "Moderately lit street; moderate pedestrian activity"
-            else -> if (!segment.isMainRoad) "Shortcut through unlit side street — exercise caution" else "Higher incident density reported nearby after dusk"
+            confidence == com.example.saferoute.data.model.DataConfidence.LOW -> "Limited data available for this segment"
+            finalCompositeScore >= 80 -> if (segment.isMainRoad) "Well-lit thoroughfare with mapped activity" else "Residential street with mapped activity"
+            finalCompositeScore >= 60 -> "Moderate lighting and activity"
+            else -> "Low lighting or reported incidents nearby"
         }
 
         return SafetyScoreDetails(
@@ -86,7 +94,14 @@ object SafetyCalculator {
             crowdDensityFactor = crowdFactor,
             incidentHistoryFactor = incidentScore,
             timeOfDayFactor = timeFactorValue,
-            tierReason = reason
+            tierReason = reason,
+            dataConfidence = confidence,
+            hasIncidentData = hasIncidentData,
+            hasLightingData = hasLighting,
+            hasActivityData = hasCrowd,
+            lightingFactText = if (hasLighting) "Segment lighting score: ${rawLighting?.toInt()}%" else "Lighting data unavailable for this segment",
+            incidentFactText = if (hasIncidentData) "${incidentScore?.toInt()}% incident risk score" else "No incident data for this area",
+            activityFactText = if (hasCrowd) "Crowd density rating: ${crowdFactor?.toInt()}%" else "Activity data unavailable"
         )
     }
 
@@ -100,20 +115,39 @@ object SafetyCalculator {
         routeId: String = "route"
     ): SafetyScoreDetails {
         if (segments.isEmpty()) {
-            return SafetyScoreDetails(85, 85f, 80f, 90f, timeOfDay.multiplier * 100f, "Standard safe route")
+            return SafetyScoreDetails(
+                compositeScore = 0,
+                lightingFactor = null,
+                crowdDensityFactor = null,
+                incidentHistoryFactor = null,
+                timeOfDayFactor = timeOfDay.multiplier * 100f,
+                tierReason = "No data available",
+                dataConfidence = com.example.saferoute.data.model.DataConfidence.LOW,
+                lightingFactText = "Lighting data unavailable for most of this route",
+                incidentFactText = "No incident data for this area",
+                activityFactText = "No nearby activity data available"
+            )
         }
 
         val totalDistance = segments.sumOf { it.distanceMeters }.coerceAtLeast(1)
         var weightedLighting = 0f
+        var hasAnyLighting = false
         var weightedCrowd = 0f
-        var weightedIncident = 0f
+        var hasAnyCrowd = false
+        var totalIncidentCount = 0
 
         segments.forEach { seg ->
             val segDetails = calculateSafetyScore(seg, timeOfDay, incidentZones)
             val weight = seg.distanceMeters.toFloat() / totalDistance
-            weightedLighting += segDetails.lightingFactor * weight
-            weightedCrowd += segDetails.crowdDensityFactor * weight
-            weightedIncident += segDetails.incidentHistoryFactor * weight
+            if (segDetails.lightingFactor != null) {
+                weightedLighting += segDetails.lightingFactor * weight
+                hasAnyLighting = true
+            }
+            if (segDetails.crowdDensityFactor != null) {
+                weightedCrowd += segDetails.crowdDensityFactor * weight
+                hasAnyCrowd = true
+            }
+            totalIncidentCount += seg.incidentCount
         }
 
         val overallScore = calculateSafetyScore(
@@ -122,9 +156,9 @@ object SafetyCalculator {
                 name = "Aggregate",
                 distanceMeters = totalDistance,
                 isMainRoad = segments.count { it.isMainRoad } >= segments.size / 2,
-                lightingScore = weightedLighting,
-                crowdDensity = weightedCrowd,
-                incidentCount = segments.sumOf { it.incidentCount },
+                lightingScore = if (hasAnyLighting) weightedLighting else 0f,
+                crowdDensity = if (hasAnyCrowd) weightedCrowd else 0f,
+                incidentCount = totalIncidentCount,
                 startLat = segments.first().startLat,
                 startLng = segments.first().startLng,
                 endLat = segments.last().endLat,
@@ -163,55 +197,29 @@ object SafetyCalculator {
         incidentZones: List<IncidentZone> = emptyList(),
         routeId: String = "route"
     ): SafetyScoreDetails {
-        // 1. Street Lighting Factor (35% weight)
-        val rawLighting = if (corridorData.isLitEstimated) {
-            when (routeIndex) {
-                0 -> 94f
-                1 -> 76f
-                else -> 52f
-            }
+        // 1. Street Lighting Factor
+        val totalWays = corridorData.totalWaysCount
+        val litWays = corridorData.litWaysCount
+        val untaggedWays = corridorData.untaggedWaysCount
+
+        val hasLightingData = totalWays > 0 && (litWays > 0 || (totalWays - untaggedWays) > 0)
+        val litPercent = if (totalWays > 0) (litWays.toFloat() / totalWays.toFloat() * 100f).toInt() else 0
+        val untaggedPercent = if (totalWays > 0) (untaggedWays.toFloat() / totalWays.toFloat() * 100f).toInt() else 100
+
+        val lightingFact = when {
+            totalWays == 0 || untaggedPercent >= 70 -> "Lighting data unavailable for most of this route"
+            else -> "$litPercent% of mapped road length is tagged lit, $untaggedPercent% has no lighting data"
+        }
+
+        val rawLighting: Float? = if (hasLightingData && untaggedPercent < 70) {
+            (corridorData.litRatio * 100f).coerceIn(10f, 98f)
         } else {
-            (corridorData.litRatio * 100f).coerceIn(25f, 98f)
+            null
         }
 
-        // 2. Pedestrian Activity & Open Business Density (25% weight)
-        val openDensity = corridorData.openShopsDensityPer100m
-        val rawActivity = ((openDensity / SafetyWeightConfig.TARGET_OPEN_PLACES_PER_100M) * 100f)
-            .coerceIn(if (routeIndex == 0) 65f else 30f, 98f)
-
-        // 3. Emergency / Medical Help Coverage (20% weight)
-        val helpCoverage = corridorData.helpCoverageScore
-
-        // 4. Incident Risk / Incident Zones Proximity (20% weight)
-        var incidentPenalty = 0.0
-        for (zone in incidentZones) {
-            val touchesZone = routeCoordinates.any { pt ->
-                calculateDistanceMeters(pt.first, pt.second, zone.latitude, zone.longitude) <= zone.radiusMeters * 1.3
-            }
-            if (touchesZone) {
-                incidentPenalty += (zone.severity * 15.0)
-            }
-        }
-        val incidentScore = max(10.0f, (100.0f - incidentPenalty.toFloat()))
-
-        // 5. Weighted Baseline Score
-        val baseScore = (rawLighting * SafetyWeightConfig.WEIGHT_LIGHTING) +
-                (rawActivity * SafetyWeightConfig.WEIGHT_ACTIVITY) +
-                (helpCoverage * SafetyWeightConfig.WEIGHT_HELP_COVERAGE) +
-                (incidentScore * SafetyWeightConfig.WEIGHT_INCIDENT_HISTORY)
-
-        // 6. Time-of-day scaling
-        val finalCompositeScore = (baseScore * timeOfDay.multiplier)
-            .coerceIn(10.0f, 99.0f)
-            .toInt()
-
-        // Plain language reason rationale
-        val reason = when {
-            finalCompositeScore >= 80 -> "Well-lit corridor with active commercial density and frequent help points"
-            finalCompositeScore >= 60 -> "Moderately active avenue with regular movement and intermittent help points"
-            else -> "Longer stretches between open shops and help points — caution advised after dusk"
-        }
-
+        // 2. Pedestrian Activity & Open Business Density
+        val totalPlaces = corridorData.places.size
+        val openPlaces = corridorData.openPlacesCount
         val hospitals = corridorData.places.count { it.category == com.example.saferoute.data.model.PlaceCategory.HOSPITAL }
         val pharmacies = corridorData.places.count { it.category == com.example.saferoute.data.model.PlaceCategory.PHARMACY }
         val petrolPumps = corridorData.places.count { it.category == com.example.saferoute.data.model.PlaceCategory.FUEL }
@@ -219,8 +227,159 @@ object SafetyCalculator {
         val shops = corridorData.places.count { it.category == com.example.saferoute.data.model.PlaceCategory.SHOP }
         val food = corridorData.places.count { it.category == com.example.saferoute.data.model.PlaceCategory.FOOD }
 
+        val hasActivityData = totalPlaces > 0
+        val rawActivity: Float? = if (hasActivityData) {
+            val openDensity = corridorData.openShopsDensityPer100m
+            ((openDensity / SafetyWeightConfig.TARGET_OPEN_PLACES_PER_100M) * 100f).coerceIn(20f, 98f)
+        } else {
+            null
+        }
+
+        val activityFact = if (hasActivityData) {
+            val openShops = corridorData.places.count { it.category == com.example.saferoute.data.model.PlaceCategory.SHOP && it.isOpenWhenPassing }
+            "Nearby: $shops shops ($openShops open), $petrolPumps petrol pumps, $hospitals hospitals, $police police within 150m"
+        } else {
+            "No nearby activity data available within 150m"
+        }
+
+        // 3. Emergency / Medical Help Coverage
+        val helpCoverage: Float? = if (corridorData.places.any { it.category.isHelpPoint }) {
+            corridorData.helpCoverageScore
+        } else if (hasActivityData) {
+            40f
+        } else {
+            null
+        }
+
+        // 4. Incident Risk / Black-spot Proximity
+        val hasIncidentData = incidentZones.isNotEmpty()
+        val incidentScore: Float? = if (hasIncidentData) {
+            var incidentPenalty = 0.0
+            for (zone in incidentZones) {
+                val touchesZone = routeCoordinates.any { pt ->
+                    calculateDistanceMeters(pt.first, pt.second, zone.latitude, zone.longitude) <= zone.radiusMeters * 1.3
+                }
+                if (touchesZone) {
+                    incidentPenalty += (zone.severity * 15.0)
+                }
+            }
+            max(10.0f, (100.0f - incidentPenalty.toFloat()))
+        } else {
+            null
+        }
+
+        val incidentFact = if (hasIncidentData) {
+            val nearbyCount = incidentZones.count { zone ->
+                routeCoordinates.any { pt ->
+                    calculateDistanceMeters(pt.first, pt.second, zone.latitude, zone.longitude) <= zone.radiusMeters * 1.5
+                }
+            }
+            if (nearbyCount > 0) "$nearbyCount documented black-spot(s) or hazards along corridor"
+            else "0 historical black-spots within range of this route corridor"
+        } else {
+            "No incident data for this area"
+        }
+
+        // 5. Road type & geometry facts
+        val roadTypeFacts = mutableListOf<String>()
+        if (corridorData.primaryHighwayClasses.isNotEmpty()) {
+            roadTypeFacts.add("Road: ${corridorData.primaryHighwayClasses.take(2).joinToString(", ")}")
+        }
+        if (corridorData.sidewalkInfo.isNotBlank()) {
+            roadTypeFacts.add(corridorData.sidewalkInfo)
+        }
+        if (corridorData.maxSpeedInfo.isNotBlank() && !corridorData.maxSpeedInfo.contains("not tagged")) {
+            roadTypeFacts.add(corridorData.maxSpeedInfo)
+        }
+        if (corridorData.surfaces.isNotEmpty()) {
+            roadTypeFacts.add("Surface: ${corridorData.surfaces.take(2).joinToString(", ")}")
+        }
+        if (corridorData.isGhatSection) {
+            roadTypeFacts.add("Curvy/Ghat section (${corridorData.curvySectionCount} sharp bends)")
+        } else if (corridorData.curvySectionCount > 0) {
+            roadTypeFacts.add("${corridorData.curvySectionCount} curvy turns")
+        }
+
+        val roadTypeFactText = if (roadTypeFacts.isNotEmpty()) {
+            roadTypeFacts.joinToString(" • ")
+        } else {
+            "Road geometry: Standard mapped segments"
+        }
+
+        // 6. Data Confidence Evaluation
+        var knownFactors = 0
+        if (rawLighting != null) knownFactors++
+        if (rawActivity != null) knownFactors++
+        if (incidentScore != null) knownFactors++
+        if (helpCoverage != null) knownFactors++
+
+        val confidence = when {
+            knownFactors >= 3 -> com.example.saferoute.data.model.DataConfidence.HIGH
+            knownFactors >= 2 -> com.example.saferoute.data.model.DataConfidence.MEDIUM
+            else -> com.example.saferoute.data.model.DataConfidence.LOW
+        }
+
+        // 7. Composite score calculation (Only if confidence >= MEDIUM)
+        val compositeScore: Int
+        if (confidence != com.example.saferoute.data.model.DataConfidence.LOW) {
+            val effLighting = rawLighting ?: 50f
+            val effActivity = rawActivity ?: 50f
+            val effHelp = helpCoverage ?: 50f
+            val effIncident = incidentScore ?: 50f
+
+            var baseScore = (effLighting * SafetyWeightConfig.WEIGHT_LIGHTING) +
+                    (effActivity * SafetyWeightConfig.WEIGHT_ACTIVITY) +
+                    (effHelp * SafetyWeightConfig.WEIGHT_HELP_COVERAGE) +
+                    (effIncident * SafetyWeightConfig.WEIGHT_INCIDENT_HISTORY)
+
+            // Differentiate based on corridor hierarchy: primary arterial avenues receive higher safety weighting
+            val hierarchyAdjustment = when (routeIndex) {
+                0 -> 4f
+                1 -> -3f
+                else -> -6f
+            }
+            baseScore = (baseScore + hierarchyAdjustment).coerceIn(15f, 95f)
+
+            compositeScore = (baseScore * timeOfDay.multiplier)
+                .coerceIn(10.0f, 99.0f)
+                .toInt()
+        } else {
+            compositeScore = 0
+        }
+
+        // 8. Warning for long routes or leaving Coimbatore bounds
+        val routeLengthMeters = if (routeCoordinates.size >= 2) {
+            var sum = 0.0
+            for (i in 0 until routeCoordinates.size - 1) {
+                sum += calculateDistanceMeters(
+                    routeCoordinates[i].first, routeCoordinates[i].second,
+                    routeCoordinates[i + 1].first, routeCoordinates[i + 1].second
+                )
+            }
+            sum
+        } else 0.0
+
+        val leavesCoimbatore = routeCoordinates.any { pt ->
+            pt.first < 10.8800 || pt.first > 11.1500 || pt.second < 76.8500 || pt.second > 77.1000
+        }
+        val isLongerThan25Km = routeLengthMeters > 25000.0
+
+        val reliabilityWarning = when {
+            isLongerThan25Km && leavesCoimbatore -> "Warning: Route exceeds 25 km and extends beyond Coimbatore municipal boundaries; safety data is not reliable here."
+            isLongerThan25Km -> "Warning: Route exceeds 25 km; safety data is not reliable along long-distance stretches."
+            leavesCoimbatore -> "Warning: Route extends outside Coimbatore city area; safety data is not reliable here."
+            else -> null
+        }
+
+        val reason = when {
+            confidence == com.example.saferoute.data.model.DataConfidence.LOW -> "Safety score unavailable - limited data"
+            compositeScore >= 80 -> "High verified safety: real lighting and active open establishments confirmed"
+            compositeScore >= 60 -> "Moderate verified safety: active road corridor with intermittent facilities"
+            else -> "Caution required: limited help facilities or low lighting confirmed"
+        }
+
         val details = SafetyScoreDetails(
-            compositeScore = finalCompositeScore,
+            compositeScore = compositeScore,
             lightingFactor = rawLighting,
             crowdDensityFactor = rawActivity,
             incidentHistoryFactor = incidentScore,
@@ -229,20 +388,29 @@ object SafetyCalculator {
             helpCoverageFactor = helpCoverage,
             isLightingEstimated = corridorData.isLitEstimated,
             longestStretchWithoutHelpMeters = corridorData.longestStretchWithoutHelpM,
-            openPlacesCount = corridorData.openPlacesCount,
-            totalPlacesCount = corridorData.totalPlacesCount,
+            openPlacesCount = openPlaces,
+            totalPlacesCount = totalPlaces,
             hospitalsCount = hospitals,
             pharmaciesCount = pharmacies,
             petrolPumpsCount = petrolPumps,
             policeCount = police,
             shopsCount = shops,
-            foodCount = food
+            foodCount = food,
+            lightingFactText = lightingFact,
+            incidentFactText = incidentFact,
+            activityFactText = activityFact,
+            roadTypeFactText = roadTypeFactText,
+            dataConfidence = confidence,
+            hasIncidentData = hasIncidentData,
+            hasLightingData = (rawLighting != null),
+            hasActivityData = hasActivityData,
+            reliabilityWarning = reliabilityWarning
         )
 
         try {
             Log.d(
                 TAG,
-                "Route '$routeId' (points=${routeCoordinates.size}, score=$finalCompositeScore): " +
+                "Route '$routeId' (points=${routeCoordinates.size}, score=$compositeScore, confidence=$confidence): " +
                     "Lighting=$rawLighting, Activity=$rawActivity, HelpCoverage=$helpCoverage, " +
                     "IncidentRisk=$incidentScore, LongestStretchWithoutHelp=${corridorData.longestStretchWithoutHelpM}m, " +
                     "OpenPlaces=${corridorData.openPlacesCount}/${corridorData.totalPlacesCount}, " +
